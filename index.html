@@ -75,12 +75,15 @@
     height:100dvh;
     overflow-y:auto;
     -webkit-overflow-scrolling:touch;
-    align-items:center;
+    align-items:flex-start;
     justify-content:center;
     position:relative;
     padding-top:110px;
     padding-bottom:90px;
     animation: fade-in .35s ease;
+  }
+  @supports (align-items: safe center){
+    .horizontal-section{ align-items: safe center; }
   }
   @media (max-width:640px){ .horizontal-section{ padding-top:88px; padding-bottom:110px; } }
   .horizontal-section.active{ display:flex; }
