@@ -1,0 +1,563 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Optical Transfer — light-speed file beam</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/qrcode/1.5.1/qrcode.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jsQR/1.4.0/jsQR.js"></script>
+<style>
+  :root{
+    --ink:#0d1b1e;
+    --paper:#eef1ea;
+    --beam:#3ddc97;
+    --beam-dim:#1f7a56;
+    --amber:#e8a33d;
+    --line:#c9d0c4;
+    --mono: "IBM Plex Mono", "SF Mono", Menlo, Consolas, monospace;
+    --sans: "IBM Plex Sans", -apple-system, sans-serif;
+  }
+  *{box-sizing:border-box;}
+  body{
+    margin:0; min-height:100vh; background:var(--ink); color:var(--paper);
+    font-family:var(--sans); padding:0;
+  }
+  .scan-bg{
+    position:fixed; inset:0; z-index:0; pointer-events:none; opacity:.06;
+    background: repeating-linear-gradient(180deg, var(--beam) 0px, var(--beam) 1px, transparent 1px, transparent 3px);
+  }
+  header{
+    position:relative; z-index:1;
+    padding: 28px 24px 18px; border-bottom:1px solid #1c2c2f;
+    display:flex; align-items:baseline; justify-content:space-between; flex-wrap:wrap; gap:12px;
+  }
+  .brand{font-family:var(--mono); font-size:14px; letter-spacing:.14em; text-transform:uppercase; color:var(--beam);}
+  .brand b{color:var(--paper); letter-spacing:0;}
+  .modeswitch{display:flex; gap:2px; background:#122225; border:1px solid #1c2c2f; border-radius:8px; padding:2px;}
+  .modeswitch button{
+    font-family:var(--mono); font-size:12px; letter-spacing:.08em; text-transform:uppercase;
+    background:transparent; border:none; color:#7d9490; padding:8px 16px; border-radius:6px; cursor:pointer;
+  }
+  .modeswitch button.active{background:var(--beam); color:#04140f; font-weight:600;}
+  main{position:relative; z-index:1; max-width:920px; margin:0 auto; padding:32px 24px 80px;}
+  .panel{display:none;}
+  .panel.active{display:block;}
+  .grid{display:grid; grid-template-columns: 1fr; gap:24px;}
+  @media(min-width:760px){ .grid.two{grid-template-columns: 1.1fr .9fr;} }
+  .card{
+    background:#0f2023; border:1px solid #1c2c2f; border-radius:14px; padding:22px;
+  }
+  .label{font-family:var(--mono); font-size:11px; text-transform:uppercase; letter-spacing:.12em; color:var(--beam); margin:0 0 10px;}
+  .stage{
+    aspect-ratio:1/1; background:#fff; border-radius:10px; display:flex; align-items:center; justify-content:center;
+    position:relative; overflow:hidden;
+  }
+  .stage canvas{width:100%; height:100%; display:block;}
+  .stage video{width:100%; height:100%; object-fit:cover; display:block; transform:scaleX(-1);}
+  .stage .placeholder{font-family:var(--mono); color:#98a; font-size:13px; text-align:center; padding:20px; color:#889;}
+  .field{margin-bottom:16px;}
+  .field label{display:block; font-size:12px; color:#9fb0ac; margin-bottom:6px; font-family:var(--mono);}
+  input[type=file]{
+    width:100%; font-family:var(--mono); font-size:12px; color:var(--paper);
+    background:#122225; border:1px dashed #2a403f; border-radius:8px; padding:14px;
+  }
+  input[type=range]{width:100%;}
+  .row{display:flex; align-items:center; justify-content:space-between; gap:8px;}
+  .btn{
+    font-family:var(--mono); text-transform:uppercase; letter-spacing:.08em; font-size:12px;
+    background:var(--beam); color:#04140f; border:none; border-radius:8px; padding:12px 20px;
+    cursor:pointer; font-weight:700; width:100%;
+  }
+  .btn:disabled{background:#2a403f; color:#6d827d; cursor:not-allowed;}
+  .btn.stop{background:#e05252; color:#2a0a0a;}
+  .status{font-family:var(--mono); font-size:12px; color:#9fb0ac; margin-top:14px; line-height:1.6; white-space:pre-wrap;}
+  .barwrap{height:8px; background:#122225; border-radius:6px; overflow:hidden; margin-top:12px; border:1px solid #1c2c2f;}
+  .bar{height:100%; width:0%; background:linear-gradient(90deg,var(--beam-dim),var(--beam)); transition:width .15s;}
+  .meta{display:flex; gap:16px; flex-wrap:wrap; margin-top:14px;}
+  .meta div{font-family:var(--mono); font-size:11px; color:#7d9490;}
+  .meta div b{display:block; font-size:18px; color:var(--paper); font-weight:600;}
+  .result{margin-top:16px; display:none;}
+  .result.show{display:block;}
+  .result img{max-width:100%; border-radius:8px; display:block; margin-bottom:10px;}
+  .result a{
+    display:inline-block; font-family:var(--mono); font-size:12px; color:#04140f; background:var(--amber);
+    padding:10px 16px; border-radius:8px; text-decoration:none; font-weight:700;
+  }
+  .note{font-size:12px; color:#7d9490; line-height:1.6; margin-top:18px;}
+  .note code{background:#122225; padding:1px 6px; border-radius:4px; color:var(--beam);}
+  .legend{position:absolute; top:8px; left:8px; font-family:var(--mono); font-size:10px; background:#0d1b1e; color:var(--beam); padding:3px 7px; border-radius:5px;}
+</style>
+</head>
+<body>
+<div class="scan-bg"></div>
+<header>
+  <div class="brand"><b>OPTICAL TRANSFER</b> · fountain-coded QR</div>
+  <div class="modeswitch">
+    <button id="tab-send" class="active">Send</button>
+    <button id="tab-recv">Receive</button>
+  </div>
+</header>
+
+<main>
+
+  <!-- SEND PANEL -->
+  <section id="panel-send" class="panel active">
+    <div class="grid two">
+      <div class="card">
+        <p class="label">01 · Stream</p>
+        <div class="stage" id="send-stage">
+          <div class="placeholder">Choose a file to begin beaming it as light.</div>
+        </div>
+        <div class="row" style="margin-top:16px;">
+          <span class="label" style="margin:0;">FPS</span>
+          <input type="range" id="fps" min="2" max="12" value="6" style="max-width:180px;">
+          <span id="fps-val" style="font-family:var(--mono); font-size:12px;">6</span>
+        </div>
+      </div>
+      <div class="card">
+        <p class="label">02 · Payload</p>
+        <div class="field">
+          <label>File (best under ~80KB for a reliable read)</label>
+          <input type="file" id="file-input">
+        </div>
+        <div class="field">
+          <label>Block size (bytes)</label>
+          <input type="range" id="blocksize" min="60" max="300" value="150" style="width:70%; display:inline-block;">
+          <span id="blocksize-val" style="font-family:var(--mono); font-size:12px;">150</span>
+        </div>
+        <button class="btn" id="send-toggle" disabled>Select a file first</button>
+        <div class="meta">
+          <div>Blocks (K)<b id="m-k">–</b></div>
+          <div>Frame size<b id="m-frame">–</b></div>
+          <div>Frames sent<b id="m-seq">0</b></div>
+        </div>
+        <p class="status" id="send-status">Idle.</p>
+        <p class="note">Every frame carries a random XOR combination of file blocks, plus which blocks it used. Point a phone camera at the code — any ~1.15×K frames, in any order, is enough to reconstruct the file. Dropped or blurry frames just cost a little time.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- RECEIVE PANEL -->
+  <section id="panel-recv" class="panel">
+    <div class="grid two">
+      <div class="card">
+        <p class="label">01 · Camera</p>
+        <div class="stage" id="recv-stage">
+          <div class="placeholder">Camera preview appears here.</div>
+        </div>
+        <button class="btn" id="cam-toggle" style="margin-top:16px;">Start camera</button>
+      </div>
+      <div class="card">
+        <p class="label">02 · Reconstruction</p>
+        <div class="meta">
+          <div>Blocks known<b id="r-known">0 / 0</b></div>
+          <div>Frames read<b id="r-frames">0</b></div>
+          <div>Redundant<b id="r-redundant">0</b></div>
+        </div>
+        <div class="barwrap"><div class="bar" id="r-bar"></div></div>
+        <p class="status" id="recv-status">Waiting for a signal…</p>
+        <div class="result" id="recv-result">
+          <div id="recv-preview"></div>
+          <a id="recv-download" download>Download file</a>
+        </div>
+        <p class="note">Decoding runs entirely in this tab via <code>jsQR</code>. Hold the phone steady — camera autofocus hunting from hand tremor is the most common cause of dropped frames.</p>
+      </div>
+    </div>
+  </section>
+
+</main>
+
+<script>
+/* ============================================================
+   Deterministic-free LT fountain code.
+   Each frame explicitly carries the block indices it XORs, so
+   sender and receiver never need to agree on a shared PRNG —
+   sidesteps the classic "Math.log differs across JS engines"
+   fountain-code bug entirely, at the cost of a few bytes/frame.
+   ============================================================ */
+
+// ---- soliton distribution ----
+function robustSolitonCDF(K, c, delta){
+  c = c || 0.1; delta = delta || 0.5;
+  const rho = new Float64Array(K+1);
+  rho[1] = 1/K;
+  for(let i=2;i<=K;i++) rho[i] = 1/(i*(i-1));
+  const R = Math.max(1, c*Math.log(K/delta)*Math.sqrt(K));
+  const tau = new Float64Array(K+1);
+  const pivot = Math.min(K, Math.max(1, Math.round(K/R)));
+  for(let i=1;i<pivot;i++) tau[i] = R/(i*K);
+  tau[pivot] = (tau[pivot]||0) + R*Math.log(R/delta)/K;
+  const mu = new Float64Array(K+1);
+  let beta = 0;
+  for(let i=1;i<=K;i++){ mu[i] = Math.max(0, rho[i]+tau[i]); beta += mu[i]; }
+  const cdf = new Float64Array(K+1);
+  let acc = 0;
+  for(let i=1;i<=K;i++){ acc += mu[i]/beta; cdf[i] = acc; }
+  return cdf;
+}
+function sampleDegree(cdf, K){
+  const r = Math.random();
+  for(let i=1;i<=K;i++) if(r <= cdf[i]) return i;
+  return K;
+}
+function pickIndices(K, d){
+  if(d >= K) return Array.from({length:K}, (_,i)=>i);
+  const s = new Set();
+  while(s.size < d) s.add(Math.floor(Math.random()*K));
+  return Array.from(s);
+}
+
+// ---- checksum (FNV-1a 32-bit) ----
+function fnv1a(bytes){
+  let h = 0x811c9dc5;
+  for(let i=0;i<bytes.length;i++){
+    h ^= bytes[i];
+    h = Math.imul(h, 0x01000193);
+  }
+  return h >>> 0;
+}
+
+// ---- byte <-> base64 ----
+function bytesToB64(bytes){
+  let bin = '';
+  for(let i=0;i<bytes.length;i++) bin += String.fromCharCode(bytes[i]);
+  return btoa(bin);
+}
+function b64ToBytes(b64){
+  const bin = atob(b64);
+  const out = new Uint8Array(bin.length);
+  for(let i=0;i<bin.length;i++) out[i] = bin.charCodeAt(i);
+  return out;
+}
+
+// ---- little-endian helpers ----
+function writeU32(view, offset, val){ view.setUint32(offset, val, true); }
+function writeU16(view, offset, val){ view.setUint16(offset, val, true); }
+function readU32(view, offset){ return view.getUint32(offset, true); }
+function readU16(view, offset){ return view.getUint16(offset, true); }
+
+/* ============================================================
+   Frame format:
+   [sessionId u32][seq u32][K u16][blockSize u16][fileLen u32][checksum u32]
+   [degree u8][indices: degree * u16][payload: blockSize bytes]
+   ============================================================ */
+
+function buildFrame(sessionId, seq, K, blockSize, fileLen, checksum, indices, payload){
+  const headLen = 4+4+2+2+4+4+1 + indices.length*2;
+  const buf = new ArrayBuffer(headLen + payload.length);
+  const view = new DataView(buf);
+  let o = 0;
+  writeU32(view,o,sessionId); o+=4;
+  writeU32(view,o,seq); o+=4;
+  writeU16(view,o,K); o+=2;
+  writeU16(view,o,blockSize); o+=2;
+  writeU32(view,o,fileLen); o+=4;
+  writeU32(view,o,checksum); o+=4;
+  view.setUint8(o, indices.length); o+=1;
+  for(const idx of indices){ writeU16(view,o,idx); o+=2; }
+  const bytes = new Uint8Array(buf);
+  bytes.set(payload, o);
+  return bytes;
+}
+function parseFrame(bytes){
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  let o = 0;
+  const sessionId = readU32(view,o); o+=4;
+  const seq = readU32(view,o); o+=4;
+  const K = readU16(view,o); o+=2;
+  const blockSize = readU16(view,o); o+=2;
+  const fileLen = readU32(view,o); o+=4;
+  const checksum = readU32(view,o); o+=4;
+  const degree = view.getUint8(o); o+=1;
+  const indices = [];
+  for(let i=0;i<degree;i++){ indices.push(readU16(view,o)); o+=2; }
+  const payload = bytes.slice(o, o+blockSize);
+  return {sessionId, seq, K, blockSize, fileLen, checksum, indices, payload};
+}
+
+function xorInto(dst, src){
+  for(let i=0;i<dst.length;i++) dst[i] ^= src[i];
+}
+
+/* ================= SENDER ================= */
+const sendState = { fileBytes:null, fileName:'', fileType:'', running:false, seq:0, K:0, blockSize:150, sessionId:0, blocks:null, fileLen:0, checksum:0, timer:null };
+
+document.getElementById('fps').addEventListener('input', e=>{
+  document.getElementById('fps-val').textContent = e.target.value;
+  if(sendState.running){ stopSending(); startSending(); }
+});
+document.getElementById('blocksize').addEventListener('input', e=>{
+  document.getElementById('blocksize-val').textContent = e.target.value;
+});
+
+document.getElementById('file-input').addEventListener('change', async (e)=>{
+  const f = e.target.files[0];
+  if(!f) return;
+  const arr = new Uint8Array(await f.arrayBuffer());
+  const meta = JSON.stringify({name:f.name, type:f.type||'application/octet-stream'});
+  const metaBytes = new TextEncoder().encode(meta);
+  const metaLenBuf = new Uint8Array(4);
+  new DataView(metaLenBuf.buffer).setUint32(0, metaBytes.length, true);
+  const combined = new Uint8Array(4 + metaBytes.length + arr.length);
+  combined.set(metaLenBuf, 0);
+  combined.set(metaBytes, 4);
+  combined.set(arr, 4+metaBytes.length);
+
+  sendState.fileBytes = combined;
+  sendState.fileName = f.name;
+  sendState.blockSize = parseInt(document.getElementById('blocksize').value,10);
+  const blockSize = sendState.blockSize;
+  const K = Math.ceil(combined.length / blockSize);
+  const padded = new Uint8Array(K*blockSize);
+  padded.set(combined);
+  const blocks = [];
+  for(let i=0;i<K;i++) blocks.push(padded.slice(i*blockSize, (i+1)*blockSize));
+  sendState.blocks = blocks;
+  sendState.K = K;
+  sendState.fileLen = combined.length;
+  sendState.checksum = fnv1a(combined);
+  sendState.cdf = robustSolitonCDF(K);
+  sendState.sessionId = Math.floor(Math.random()*0xffffffff)>>>0;
+  sendState.seq = 0;
+
+  document.getElementById('m-k').textContent = K;
+  document.getElementById('m-frame').textContent = (20 + blockSize) + ' B';
+  document.getElementById('send-toggle').disabled = false;
+  document.getElementById('send-toggle').textContent = 'Start beaming';
+  document.getElementById('send-status').textContent =
+    `Loaded ${f.name} — ${combined.length} bytes → ${K} blocks of ${blockSize}B.`;
+});
+
+document.getElementById('send-toggle').addEventListener('click', ()=>{
+  if(sendState.running){ stopSending(); }
+  else { startSending(); }
+});
+
+function startSending(){
+  if(!sendState.blocks) return;
+  sendState.running = true;
+  document.getElementById('send-toggle').textContent = 'Stop';
+  document.getElementById('send-toggle').classList.add('stop');
+  const fps = parseInt(document.getElementById('fps').value,10);
+  const interval = Math.round(1000/fps);
+
+  const stage = document.getElementById('send-stage');
+  stage.innerHTML = '<canvas id="send-canvas"></canvas><div class="legend">TX</div>';
+  const canvas = document.getElementById('send-canvas');
+
+  sendState.timer = setInterval(()=>{
+    const {K, blockSize, fileLen, checksum, sessionId, cdf, blocks} = sendState;
+    const d = Math.min(K, sampleDegree(cdf, K));
+    const indices = pickIndices(K, d);
+    const payload = new Uint8Array(blockSize);
+    for(const idx of indices) xorInto(payload, blocks[idx]);
+    const frame = buildFrame(sessionId, sendState.seq, K, blockSize, fileLen, checksum, indices, payload);
+    const b64 = bytesToB64(frame);
+    QRCode.toCanvas(canvas, b64, {errorCorrectionLevel:'M', margin:1, width:340}, (err)=>{
+      if(err) console.error(err);
+    });
+    sendState.seq++;
+    document.getElementById('m-seq').textContent = sendState.seq;
+  }, interval);
+
+  document.getElementById('send-status').textContent = 'Beaming… point a phone camera at the code on the Receive tab.';
+}
+function stopSending(){
+  sendState.running = false;
+  clearInterval(sendState.timer);
+  document.getElementById('send-toggle').textContent = 'Start beaming';
+  document.getElementById('send-toggle').classList.remove('stop');
+  document.getElementById('send-status').textContent = 'Stopped.';
+}
+
+/* ================= RECEIVER ================= */
+const recvState = { active:false, stream:null, sessionId:null, K:0, blockSize:0, fileLen:0, checksum:0,
+  blocks:null, known:0, pending:[], seen:null, framesRead:0, redundant:0 };
+
+function resetReceiver(sessionId, K, blockSize, fileLen, checksum){
+  recvState.sessionId = sessionId;
+  recvState.K = K;
+  recvState.blockSize = blockSize;
+  recvState.fileLen = fileLen;
+  recvState.checksum = checksum;
+  recvState.blocks = new Array(K).fill(null);
+  recvState.known = 0;
+  recvState.pending = []; // {indices:Set, data:Uint8Array}
+  recvState.seen = new Set();
+  recvState.framesRead = 0;
+  recvState.redundant = 0;
+  document.getElementById('recv-result').classList.remove('show');
+  updateRecvMeta();
+  document.getElementById('recv-status').textContent = `Locked onto a new stream — 0 / ${K} blocks.`;
+}
+
+function updateRecvMeta(){
+  document.getElementById('r-known').textContent = `${recvState.known} / ${recvState.K || 0}`;
+  document.getElementById('r-frames').textContent = recvState.framesRead;
+  document.getElementById('r-redundant').textContent = recvState.redundant;
+  const pct = recvState.K ? Math.round(100*recvState.known/recvState.K) : 0;
+  document.getElementById('r-bar').style.width = pct + '%';
+}
+
+function solveBlock(idx, data){
+  recvState.blocks[idx] = data;
+  recvState.known++;
+  // iterative cascade (queue-based, so we never mutate `pending`
+  // from two overlapping passes at once)
+  const queue = [idx];
+  while(queue.length){
+    const cur = queue.shift();
+    const curData = recvState.blocks[cur];
+    for(let i=recvState.pending.length-1; i>=0; i--){
+      const eq = recvState.pending[i];
+      if(eq.indices.has(cur)){
+        xorInto(eq.data, curData);
+        eq.indices.delete(cur);
+        if(eq.indices.size === 0){
+          recvState.pending.splice(i,1);
+        } else if(eq.indices.size === 1){
+          const [only] = eq.indices;
+          recvState.pending.splice(i,1);
+          if(!recvState.blocks[only]){
+            recvState.blocks[only] = eq.data;
+            recvState.known++;
+            queue.push(only);
+          }
+        }
+      }
+    }
+  }
+}
+
+function handleFrame(frame){
+  if(recvState.sessionId !== frame.sessionId){
+    resetReceiver(frame.sessionId, frame.K, frame.blockSize, frame.fileLen, frame.checksum);
+  }
+  if(recvState.seen.has(frame.seq)){ return; }
+  recvState.seen.add(frame.seq);
+  recvState.framesRead++;
+
+  const indices = new Set(frame.indices);
+  const data = frame.payload.slice();
+  for(const idx of Array.from(indices)){
+    if(recvState.blocks[idx]){
+      xorInto(data, recvState.blocks[idx]);
+      indices.delete(idx);
+    }
+  }
+  if(indices.size === 0){
+    recvState.redundant++;
+  } else if(indices.size === 1){
+    const [only] = indices;
+    if(!recvState.blocks[only]) solveBlock(only, data);
+  } else {
+    recvState.pending.push({indices, data});
+  }
+
+  updateRecvMeta();
+  document.getElementById('recv-status').textContent =
+    `Reading stream… ${recvState.known} / ${recvState.K} blocks recovered.`;
+
+  if(recvState.K > 0 && recvState.known === recvState.K){
+    finishReceive();
+  }
+}
+
+function finishReceive(){
+  const K = recvState.K, blockSize = recvState.blockSize;
+  const combined = new Uint8Array(K*blockSize);
+  for(let i=0;i<K;i++) combined.set(recvState.blocks[i], i*blockSize);
+  const fileFull = combined.slice(0, recvState.fileLen);
+  const ok = fnv1a(fileFull) === recvState.checksum;
+
+  const dv = new DataView(fileFull.buffer, fileFull.byteOffset, fileFull.byteLength);
+  const metaLen = dv.getUint32(0, true);
+  const metaBytes = fileFull.slice(4, 4+metaLen);
+  const meta = JSON.parse(new TextDecoder().decode(metaBytes));
+  const content = fileFull.slice(4+metaLen);
+
+  const blob = new Blob([content], {type: meta.type || 'application/octet-stream'});
+  const url = URL.createObjectURL(blob);
+
+  document.getElementById('recv-status').textContent = ok
+    ? `Transfer complete — checksum verified. ${meta.name} (${content.length} bytes).`
+    : `Transfer complete, but checksum MISMATCH — data may be corrupted.`;
+
+  const preview = document.getElementById('recv-preview');
+  preview.innerHTML = '';
+  if((meta.type||'').startsWith('image/')){
+    const img = document.createElement('img');
+    img.src = url;
+    preview.appendChild(img);
+  }
+  const dl = document.getElementById('recv-download');
+  dl.href = url;
+  dl.download = meta.name || 'received-file';
+  document.getElementById('recv-result').classList.add('show');
+
+  stopCamera();
+  document.getElementById('cam-toggle').textContent = 'Start camera';
+}
+
+// ---- camera + QR scan loop ----
+let scanRAF = null;
+let scanCanvas = null, scanCtx = null;
+document.getElementById('cam-toggle').addEventListener('click', async ()=>{
+  if(recvState.active){ stopCamera(); document.getElementById('cam-toggle').textContent='Start camera'; return; }
+  try{
+    const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode:'environment', width:{ideal:1280}, height:{ideal:720} } });
+    recvState.stream = stream;
+    recvState.active = true;
+    const stage = document.getElementById('recv-stage');
+    stage.innerHTML = '<video id="recv-video" playsinline autoplay muted></video><div class="legend">RX</div>';
+    const video = document.getElementById('recv-video');
+    video.srcObject = stream;
+    await video.play();
+    scanCanvas = document.createElement('canvas');
+    scanCtx = scanCanvas.getContext('2d', {willReadFrequently:true});
+    document.getElementById('cam-toggle').textContent = 'Stop camera';
+    document.getElementById('recv-status').textContent = 'Camera on — point at the sender\'s screen.';
+    scanLoop(video);
+  } catch(err){
+    document.getElementById('recv-status').textContent = 'Camera error: ' + err.message;
+  }
+});
+
+function scanLoop(video){
+  if(!recvState.active) return;
+  if(video.readyState === video.HAVE_ENOUGH_DATA){
+    const w = video.videoWidth, h = video.videoHeight;
+    if(w && h){
+      scanCanvas.width = w; scanCanvas.height = h;
+      scanCtx.drawImage(video, 0, 0, w, h);
+      const imgData = scanCtx.getImageData(0,0,w,h);
+      const code = jsQR(imgData.data, w, h, {inversionAttempts:'dontInvert'});
+      if(code && code.data){
+        try{
+          const bytes = b64ToBytes(code.data);
+          const frame = parseFrame(bytes);
+          handleFrame(frame);
+        } catch(e){ /* partial/garbled read, ignore */ }
+      }
+    }
+  }
+  scanRAF = requestAnimationFrame(()=>scanLoop(video));
+}
+function stopCamera(){
+  recvState.active = false;
+  if(scanRAF) cancelAnimationFrame(scanRAF);
+  if(recvState.stream) recvState.stream.getTracks().forEach(t=>t.stop());
+}
+
+/* ================= TABS ================= */
+document.getElementById('tab-send').addEventListener('click', ()=>switchTab('send'));
+document.getElementById('tab-recv').addEventListener('click', ()=>switchTab('recv'));
+function switchTab(which){
+  document.getElementById('tab-send').classList.toggle('active', which==='send');
+  document.getElementById('tab-recv').classList.toggle('active', which==='recv');
+  document.getElementById('panel-send').classList.toggle('active', which==='send');
+  document.getElementById('panel-recv').classList.toggle('active', which==='recv');
+}
+</script>
+</body>
+</html>
