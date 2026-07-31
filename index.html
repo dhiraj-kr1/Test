@@ -10211,20 +10211,20 @@ function findAlignmentPattern(matrix, alignmentPatternQuads, topRight, topLeft, 
         </div>
         <div class="row" style="margin-top:16px;">
           <span class="label" style="margin:0;">FPS</span>
-          <input type="range" id="fps" min="2" max="12" value="6" style="max-width:180px;">
-          <span id="fps-val" style="font-family:var(--mono); font-size:12px;">6</span>
+          <input type="range" id="fps" min="2" max="12" value="11" style="max-width:180px;">
+          <span id="fps-val" style="font-family:var(--mono); font-size:12px;">11</span>
         </div>
       </div>
       <div class="card">
         <p class="label">02 · Payload</p>
         <div class="field">
-          <label>File (best under ~80KB for a reliable read)</label>
+          <label>File — block size auto-tunes to the file's size (bigger files get bigger blocks, so frame count stays manageable)</label>
           <input type="file" id="file-input">
         </div>
         <div class="field">
           <label>Block size (bytes)</label>
-          <input type="range" id="blocksize" min="60" max="300" value="150" style="width:70%; display:inline-block;">
-          <span id="blocksize-val" style="font-family:var(--mono); font-size:12px;">150</span>
+          <input type="range" id="blocksize" min="60" max="1400" value="260" style="width:70%; display:inline-block;">
+          <span id="blocksize-val" style="font-family:var(--mono); font-size:12px;">260</span>
         </div>
         <button class="btn" id="send-toggle" disabled>Select a file first</button>
         <div class="meta">
@@ -10340,11 +10340,11 @@ function readU16(view, offset){ return view.getUint16(offset, true); }
 /* ============================================================
    Frame format:
    [sessionId u32][seq u32][K u16][blockSize u16][fileLen u32][checksum u32]
-   [degree u8][indices: degree * u16][payload: blockSize bytes]
+   [degree u16][indices: degree * u16][payload: blockSize bytes]
    ============================================================ */
 
 function buildFrame(sessionId, seq, K, blockSize, fileLen, checksum, indices, payload){
-  const headLen = 4+4+2+2+4+4+1 + indices.length*2;
+  const headLen = 4+4+2+2+4+4+2 + indices.length*2;
   const buf = new ArrayBuffer(headLen + payload.length);
   const view = new DataView(buf);
   let o = 0;
@@ -10354,7 +10354,7 @@ function buildFrame(sessionId, seq, K, blockSize, fileLen, checksum, indices, pa
   writeU16(view,o,blockSize); o+=2;
   writeU32(view,o,fileLen); o+=4;
   writeU32(view,o,checksum); o+=4;
-  view.setUint8(o, indices.length); o+=1;
+  writeU16(view,o,indices.length); o+=2;
   for(const idx of indices){ writeU16(view,o,idx); o+=2; }
   const bytes = new Uint8Array(buf);
   bytes.set(payload, o);
@@ -10369,7 +10369,7 @@ function parseFrame(bytes){
   const blockSize = readU16(view,o); o+=2;
   const fileLen = readU32(view,o); o+=4;
   const checksum = readU32(view,o); o+=4;
-  const degree = view.getUint8(o); o+=1;
+  const degree = readU16(view,o); o+=2;
   const indices = [];
   for(let i=0;i<degree;i++){ indices.push(readU16(view,o)); o+=2; }
   const payload = bytes.slice(o, o+blockSize);
@@ -10381,14 +10381,39 @@ function xorInto(dst, src){
 }
 
 /* ================= SENDER ================= */
-const sendState = { fileBytes:null, fileName:'', fileType:'', running:false, seq:0, K:0, blockSize:150, sessionId:0, blocks:null, fileLen:0, checksum:0, timer:null };
+const sendState = { fileBytes:null, fileName:'', fileType:'', running:false, seq:0, K:0, blockSize:260, sessionId:0, blocks:null, fileLen:0, checksum:0, timer:null };
 
 document.getElementById('fps').addEventListener('input', e=>{
   document.getElementById('fps-val').textContent = e.target.value;
   if(sendState.running){ stopSending(); startSending(); }
 });
+function rebuildBlocks(blockSize){
+  const combined = sendState.fileBytes;
+  const K = Math.ceil(combined.length / blockSize);
+  const padded = new Uint8Array(K*blockSize);
+  padded.set(combined);
+  const blocks = [];
+  for(let i=0;i<K;i++) blocks.push(padded.slice(i*blockSize, (i+1)*blockSize));
+  sendState.blocks = blocks;
+  sendState.K = K;
+  sendState.blockSize = blockSize;
+  sendState.cdf = robustSolitonCDF(K);
+  sendState.sessionId = Math.floor(Math.random()*0xffffffff)>>>0;
+  sendState.seq = 0;
+  document.getElementById('m-k').textContent = K;
+  document.getElementById('m-frame').textContent = (20 + blockSize) + ' B';
+}
+
 document.getElementById('blocksize').addEventListener('input', e=>{
   document.getElementById('blocksize-val').textContent = e.target.value;
+});
+document.getElementById('blocksize').addEventListener('change', e=>{
+  if(sendState.fileBytes){
+    rebuildBlocks(parseInt(e.target.value,10));
+    document.getElementById('send-status').textContent =
+      `Block size set to ${e.target.value}B → ${sendState.K} blocks.`;
+    if(sendState.running){ stopSending(); startSending(); }
+  }
 });
 
 document.getElementById('file-input').addEventListener('change', async (e)=>{
@@ -10406,23 +10431,24 @@ document.getElementById('file-input').addEventListener('change', async (e)=>{
 
   sendState.fileBytes = combined;
   sendState.fileName = f.name;
-  sendState.blockSize = parseInt(document.getElementById('blocksize').value,10);
-  const blockSize = sendState.blockSize;
-  const K = Math.ceil(combined.length / blockSize);
-  const padded = new Uint8Array(K*blockSize);
-  padded.set(combined);
-  const blocks = [];
-  for(let i=0;i<K;i++) blocks.push(padded.slice(i*blockSize, (i+1)*blockSize));
-  sendState.blocks = blocks;
-  sendState.K = K;
+
+  // Auto-tune block size to the file's size: aim for roughly 300 blocks
+  // total so big files use bigger blocks (fewer, larger frames) rather
+  // than needing thousands of tiny ones.
+  const targetK = 300;
+  let autoBlockSize = Math.ceil(combined.length / targetK);
+  autoBlockSize = Math.min(1400, Math.max(60, autoBlockSize));
+  const blockSlider = document.getElementById('blocksize');
+  blockSlider.value = autoBlockSize;
+  document.getElementById('blocksize-val').textContent = autoBlockSize;
+
+  sendState.blockSize = autoBlockSize;
+  rebuildBlocks(autoBlockSize);
+  const blockSize = autoBlockSize;
+  const K = sendState.K;
   sendState.fileLen = combined.length;
   sendState.checksum = fnv1a(combined);
-  sendState.cdf = robustSolitonCDF(K);
-  sendState.sessionId = Math.floor(Math.random()*0xffffffff)>>>0;
-  sendState.seq = 0;
 
-  document.getElementById('m-k').textContent = K;
-  document.getElementById('m-frame').textContent = (20 + blockSize) + ' B';
   document.getElementById('send-toggle').disabled = false;
   document.getElementById('send-toggle').textContent = 'Start beaming';
   document.getElementById('send-status').textContent =
