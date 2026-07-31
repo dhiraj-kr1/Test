@@ -58,8 +58,6 @@ var ZXingWASM=(function(e){Object.defineProperty(e,Symbol.toStringTag,{value:`Mo
   }
   .stage canvas{width:100%; height:100%; display:block;}
   .stage video{width:100%; height:100%; object-fit:cover; display:block;}
-  .fb-canvas{position:absolute; right:8px; bottom:8px; width:64px; height:64px; border-radius:6px; border:2px solid var(--beam); background:#fff; image-rendering:pixelated;}
-  .fb-video{position:absolute; right:8px; bottom:8px; width:72px; height:72px; object-fit:cover; border-radius:6px; border:2px solid var(--amber); background:#000;}
   .stage .placeholder{font-family:var(--mono); color:#98a; font-size:13px; text-align:center; padding:20px; color:#889;}
   .field{margin-bottom:16px;}
   .field label{display:block; font-size:12px; color:#9fb0ac; margin-bottom:6px; font-family:var(--mono);}
@@ -98,6 +96,7 @@ var ZXingWASM=(function(e){Object.defineProperty(e,Symbol.toStringTag,{value:`Mo
 <div class="scan-bg"></div>
 <header>
   <div class="brand"><b>OPTICAL TRANSFER</b> · fountain-coded QR</div>
+  <div id="live-clock" style="font-family:var(--mono); font-size:12px; opacity:0.7; margin-left:auto; margin-right:8px;"></div>
   <div class="modeswitch">
     <button id="tab-send" class="active">Send</button>
     <button id="tab-recv">Receive</button>
@@ -119,13 +118,6 @@ var ZXingWASM=(function(e){Object.defineProperty(e,Symbol.toStringTag,{value:`Mo
           <input type="range" id="fps" min="2" max="12" value="11" style="max-width:180px;">
           <span id="fps-val" style="font-family:var(--mono); font-size:12px;">11</span>
         </div>
-        <div class="row" style="margin-top:10px;">
-          <label style="font-family:var(--mono); font-size:11px; color:#9fb0ac; display:flex; align-items:center; gap:6px; cursor:pointer;">
-            <input type="checkbox" id="adaptive-toggle">
-            Adaptive tuning (needs a 2nd camera aimed at the receiver's screen)
-          </label>
-        </div>
-        <p class="status" id="adaptive-stats" style="margin-top:6px;"></p>
       </div>
       <div class="card">
         <p class="label">02 · Payload</p>
@@ -143,6 +135,7 @@ var ZXingWASM=(function(e){Object.defineProperty(e,Symbol.toStringTag,{value:`Mo
           <div>Blocks (K)<b id="m-k">–</b></div>
           <div>Frame size<b id="m-frame">–</b></div>
           <div>Frames sent<b id="m-seq">0</b></div>
+          <div>Elapsed<b id="m-elapsed">–</b></div>
         </div>
         <p class="status" id="send-status">Idle.</p>
         <p class="note">Every frame carries a random XOR combination of file blocks, plus which blocks it used. Point a phone camera at the code — any ~1.15×K frames, in any order, is enough to reconstruct the file. Dropped or blurry frames just cost a little time.</p>
@@ -166,6 +159,8 @@ var ZXingWASM=(function(e){Object.defineProperty(e,Symbol.toStringTag,{value:`Mo
           <div>Blocks known<b id="r-known">0 / 0</b></div>
           <div>Frames read<b id="r-frames">0</b></div>
           <div>Redundant<b id="r-redundant">0</b></div>
+          <div>Elapsed<b id="r-elapsed">–</b></div>
+          <div>ETA<b id="r-eta">–</b></div>
         </div>
         <div class="barwrap"><div class="bar" id="r-bar"></div></div>
         <p class="status" id="recv-status">Waiting for a signal…</p>
@@ -173,7 +168,7 @@ var ZXingWASM=(function(e){Object.defineProperty(e,Symbol.toStringTag,{value:`Mo
           <div id="recv-preview"></div>
           <a id="recv-download" download>Download file</a>
         </div>
-        <p class="note">Decoding runs entirely in this tab via <code>zxing-wasm</code> (WebAssembly). Hold the phone steady — camera autofocus hunting from hand tremor is the most common cause of dropped frames. The small badge in the corner of the preview is a feedback code — enable "Adaptive tuning" on the Send tab and point a 2nd camera at it to auto-tune speed and error correction.</p>
+        <p class="note">Decoding runs entirely in this tab via <code>zxing-wasm</code> (WebAssembly). Hold the phone steady — camera autofocus hunting from hand tremor is the most common cause of dropped frames.</p>
       </div>
     </div>
   </section>
@@ -292,44 +287,12 @@ function xorInto(dst, src){
   for(let i=0;i<dst.length;i++) dst[i] ^= src[i];
 }
 
-/* ============================================================
-   Adaptive feedback badge (optional back-channel).
-   The receiver renders a small "FB1:..." QR of its own progress;
-   if the sender points a second camera at it, the sender can
-   speed up/slow down and tighten/loosen error correction based
-   on how the receiver is actually doing.
-   Format: FB1:<sessionId hex8>:<known>:<K>:<parseFailures>:<framesRead>
-   ============================================================ */
-function hex8(n){ return (n>>>0).toString(16).padStart(8,'0'); }
-function buildFeedback(sessionId, known, K, parseFailures, framesRead){
-  return `FB1:${hex8(sessionId)}:${known}:${K}:${parseFailures}:${framesRead}`;
-}
-function parseFeedback(text){
-  const parts = String(text).split(':');
-  if(parts.length !== 6 || parts[0] !== 'FB1') return null;
-  const sessionId = parseInt(parts[1],16) >>> 0;
-  const known = parseInt(parts[2],10);
-  const K = parseInt(parts[3],10);
-  const parseFailures = parseInt(parts[4],10);
-  const framesRead = parseInt(parts[5],10);
-  if([known,K,parseFailures,framesRead].some(n=>Number.isNaN(n))) return null;
-  return {sessionId, known, K, parseFailures, framesRead};
-}
-
 /* ================= SENDER ================= */
-const sendState = {
-  fileBytes:null, fileName:'', fileType:'', running:false, seq:0, K:0, blockSize:260,
-  sessionId:0, blocks:null, fileLen:0, checksum:0, timer:null,
-  // adaptive tuning
-  interval:200, ecLevel:'M', adaptive:false, feedback:null,
-  fbStream:null, fbVideo:null, fbCanvas:null, fbCtx:null, fbRAF:null,
-};
+const sendState = { fileBytes:null, fileName:'', fileType:'', running:false, seq:0, K:0, blockSize:260, sessionId:0, blocks:null, fileLen:0, checksum:0, timer:null, elapsedTimer:null, startTime:0 };
 
 document.getElementById('fps').addEventListener('input', e=>{
   document.getElementById('fps-val').textContent = e.target.value;
-  if(!sendState.adaptive){
-    sendState.interval = Math.round(1000/parseInt(e.target.value,10));
-  }
+  if(sendState.running){ stopSending(); startSending(); }
 });
 function rebuildBlocks(blockSize){
   const combined = sendState.fileBytes;
@@ -409,20 +372,14 @@ function startSending(){
   sendState.running = true;
   document.getElementById('send-toggle').textContent = 'Stop';
   document.getElementById('send-toggle').classList.add('stop');
-
   const fps = parseInt(document.getElementById('fps').value,10);
-  sendState.interval = Math.round(1000/fps);
-  sendState.ecLevel = 'M';
-  sendState.feedback = null;
-  sendState.adaptive = document.getElementById('adaptive-toggle').checked;
+  const interval = Math.round(1000/fps);
 
   const stage = document.getElementById('send-stage');
-  stage.innerHTML = '<canvas id="send-canvas"></canvas><div class="legend">TX</div>'
-    + (sendState.adaptive ? '<video id="send-fb-video" class="fb-video" playsinline autoplay muted></video>' : '');
+  stage.innerHTML = '<canvas id="send-canvas"></canvas><div class="legend">TX</div>';
   const canvas = document.getElementById('send-canvas');
 
-  function tick(){
-    if(!sendState.running) return;
+  sendState.timer = setInterval(()=>{
     const {K, blockSize, fileLen, checksum, sessionId, cdf, blocks} = sendState;
     const d = Math.min(K, sampleDegree(cdf, K));
     const indices = pickIndices(K, d);
@@ -430,129 +387,32 @@ function startSending(){
     for(const idx of indices) xorInto(payload, blocks[idx]);
     const frame = buildFrame(sessionId, sendState.seq, K, blockSize, fileLen, checksum, indices, payload);
     const b64 = bytesToB64(frame);
-    QRCode.toCanvas(canvas, b64, {errorCorrectionLevel: sendState.ecLevel, margin:1, width:340}, (err)=>{
+    QRCode.toCanvas(canvas, b64, {errorCorrectionLevel:'M', margin:1, width:340}, (err)=>{
       if(err) console.error(err);
     });
     sendState.seq++;
     document.getElementById('m-seq').textContent = sendState.seq;
-    // recursive timeout (not setInterval) so the delay can change every tick
-    sendState.timer = setTimeout(tick, sendState.interval);
-  }
-  tick();
+  }, interval);
 
-  if(sendState.adaptive){
-    startFeedbackScanner();
-    document.getElementById('send-status').textContent =
-      "Beaming (adaptive)… point a phone camera at the code, and point this device's camera at the phone's feedback badge (bottom-right of its preview).";
-  } else {
-    document.getElementById('send-status').textContent = 'Beaming… point a phone camera at the code on the Receive tab.';
-  }
-  updateAdaptiveUI();
+  sendState.startTime = Date.now();
+  sendState.elapsedTimer = setInterval(()=>{
+    document.getElementById('m-elapsed').textContent = fmtDuration(Date.now() - sendState.startTime);
+  }, 1000);
+  document.getElementById('m-elapsed').textContent = '0s';
+  document.getElementById('send-status').textContent = 'Beaming… point a phone camera at the code on the Receive tab.';
 }
 function stopSending(){
   sendState.running = false;
-  clearTimeout(sendState.timer);
-  stopFeedbackScanner();
+  clearInterval(sendState.timer);
+  clearInterval(sendState.elapsedTimer);
   document.getElementById('send-toggle').textContent = 'Start beaming';
   document.getElementById('send-toggle').classList.remove('stop');
-  document.getElementById('send-status').textContent = 'Stopped.';
-  document.getElementById('adaptive-stats').textContent = '';
-}
-
-/* ---- adaptive feedback scanner (reads the receiver's feedback badge) ---- */
-async function startFeedbackScanner(){
-  try{
-    const stream = await navigator.mediaDevices.getUserMedia({ video: { width:{ideal:640}, height:{ideal:480} } });
-    sendState.fbStream = stream;
-    const video = document.getElementById('send-fb-video');
-    if(!video){ stream.getTracks().forEach(t=>t.stop()); return; }
-    sendState.fbVideo = video;
-    video.srcObject = stream;
-    await video.play();
-    sendState.fbCanvas = document.createElement('canvas');
-    sendState.fbCtx = sendState.fbCanvas.getContext('2d', {willReadFrequently:true});
-    fbScanLoop(video);
-  } catch(err){
-    sendState.adaptive = false;
-    document.getElementById('send-status').textContent =
-      'Adaptive tuning unavailable (camera error: ' + err.message + ') — sending at fixed rate instead.';
-  }
-}
-function stopFeedbackScanner(){
-  if(sendState.fbRAF) cancelAnimationFrame(sendState.fbRAF);
-  sendState.fbRAF = null;
-  if(sendState.fbStream){ sendState.fbStream.getTracks().forEach(t=>t.stop()); sendState.fbStream = null; }
-  sendState.fbVideo = null;
-}
-async function fbScanLoop(video){
-  if(!sendState.running || !sendState.adaptive) return;
-  if(video.readyState === video.HAVE_ENOUGH_DATA){
-    const w = video.videoWidth, h = video.videoHeight;
-    if(w && h){
-      sendState.fbCanvas.width = w; sendState.fbCanvas.height = h;
-      sendState.fbCtx.drawImage(video, 0, 0, w, h);
-      const imgData = sendState.fbCtx.getImageData(0,0,w,h);
-      try{
-        const results = await ZXingWASM.readBarcodes(imgData, {
-          formats: ['QRCode'],
-          tryHarder: false,
-          maxNumberOfSymbols: 1,
-        });
-        const code = results && results[0];
-        if(code && code.isValid && code.text){
-          const fb = parseFeedback(code.text);
-          if(fb && fb.sessionId === sendState.sessionId){
-            applyAdaptive(fb);
-          }
-        }
-      } catch(e){ /* no feedback badge visible this frame — ignore */ }
-    }
-  }
-  sendState.fbRAF = requestAnimationFrame(()=>fbScanLoop(video));
-}
-
-/* ---- adaptive controller: tunes interval + EC level from feedback deltas ---- */
-function applyAdaptive(fb){
-  const prev = sendState.feedback;
-  sendState.feedback = fb;
-  if(prev && prev.sessionId === fb.sessionId){
-    const dFrames = fb.framesRead - prev.framesRead;
-    const dKnown = fb.known - prev.known;
-    const dBad = fb.parseFailures - prev.parseFailures;
-    const totalAttempts = dFrames + dBad;
-    if(totalAttempts > 0){
-      const badRate = dBad / totalAttempts;
-      const MIN_INTERVAL = 60, MAX_INTERVAL = 700, STEP = 15;
-      const ladder = ['L','M','Q','H'];
-      const idx = ladder.indexOf(sendState.ecLevel);
-      if(badRate > 0.15 || (dKnown === 0 && dFrames >= 4)){
-        // receiver is struggling: slow down, and if reads are actually
-        // garbled (not just redundant), raise error correction too
-        sendState.interval = Math.min(MAX_INTERVAL, sendState.interval + STEP);
-        if(badRate > 0.15 && idx < ladder.length-1) sendState.ecLevel = ladder[idx+1];
-      } else if(badRate === 0 && dKnown > 0){
-        // receiver is keeping up cleanly: speed up, loosen error correction
-        sendState.interval = Math.max(MIN_INTERVAL, sendState.interval - STEP);
-        if(idx > 0) sendState.ecLevel = ladder[idx-1];
-      }
-    }
-  }
-  updateAdaptiveUI();
-}
-function updateAdaptiveUI(){
-  const el = document.getElementById('adaptive-stats');
-  if(!el) return;
-  if(!sendState.adaptive){ el.textContent = ''; return; }
-  const fps = Math.round(1000/sendState.interval);
-  const fb = sendState.feedback;
-  el.textContent = fb
-    ? `Adaptive: ~${fps} fps · EC ${sendState.ecLevel} · receiver ${fb.known}/${fb.K} blocks · ${fb.parseFailures} garbled reads`
-    : `Adaptive: ~${fps} fps · EC ${sendState.ecLevel} · waiting for the feedback badge…`;
+  document.getElementById('send-status').textContent = 'Stopped. (ran for ' + fmtDuration(Date.now() - sendState.startTime) + ')';
 }
 
 /* ================= RECEIVER ================= */
 const recvState = { active:false, stream:null, sessionId:null, K:0, blockSize:0, fileLen:0, checksum:0,
-  blocks:null, known:0, pending:[], seen:null, framesRead:0, redundant:0, parseFailures:0 };
+  blocks:null, known:0, pending:[], seen:null, framesRead:0, redundant:0, startTime:0, elapsedTimer:null };
 
 function resetReceiver(sessionId, K, blockSize, fileLen, checksum){
   recvState.sessionId = sessionId;
@@ -566,8 +426,22 @@ function resetReceiver(sessionId, K, blockSize, fileLen, checksum){
   recvState.seen = new Set();
   recvState.framesRead = 0;
   recvState.redundant = 0;
-  recvState.parseFailures = 0;
   document.getElementById('recv-result').classList.remove('show');
+  clearInterval(recvState.elapsedTimer);
+  recvState.startTime = Date.now();
+  recvState.elapsedTimer = setInterval(()=>{
+    const el = document.getElementById('r-elapsed');
+    const etaEl = document.getElementById('r-eta');
+    if(el) el.textContent = fmtDuration(Date.now() - recvState.startTime);
+    if(etaEl && recvState.known > 0 && recvState.K > 0){
+      const elapsed = Date.now() - recvState.startTime;
+      const rate = recvState.known / (elapsed/1000);
+      const remaining = recvState.K - recvState.known;
+      etaEl.textContent = rate > 0 ? fmtDuration(remaining/rate*1000) : '–';
+    }
+  }, 1000);
+  document.getElementById('r-elapsed').textContent = '0s';
+  document.getElementById('r-eta').textContent = '–';
   updateRecvMeta();
   document.getElementById('recv-status').textContent = `Locked onto a new stream — 0 / ${K} blocks.`;
 }
@@ -645,6 +519,9 @@ function handleFrame(frame){
 }
 
 function finishReceive(){
+  clearInterval(recvState.elapsedTimer);
+  document.getElementById('r-eta').textContent = '✓';
+  const totalTime = fmtDuration(Date.now() - recvState.startTime);
   const K = recvState.K, blockSize = recvState.blockSize;
   const combined = new Uint8Array(K*blockSize);
   for(let i=0;i<K;i++) combined.set(recvState.blocks[i], i*blockSize);
@@ -661,8 +538,8 @@ function finishReceive(){
   const url = URL.createObjectURL(blob);
 
   document.getElementById('recv-status').textContent = ok
-    ? `Transfer complete — checksum verified. ${meta.name} (${content.length} bytes).`
-    : `Transfer complete, but checksum MISMATCH — data may be corrupted.`;
+    ? `Transfer complete in ${totalTime} — checksum verified. ${meta.name} (${content.length} bytes).`
+    : `Transfer complete in ${totalTime}, but checksum MISMATCH — data may be corrupted.`;
 
   const preview = document.getElementById('recv-preview');
   preview.innerHTML = '';
@@ -714,8 +591,7 @@ document.getElementById('cam-toggle').addEventListener('click', async ()=>{
     recvState.stream = stream;
     recvState.active = true;
     const stage = document.getElementById('recv-stage');
-    stage.innerHTML = '<video id="recv-video" playsinline autoplay muted></video><div class="legend">RX</div>'
-      + '<canvas id="recv-feedback-canvas" class="fb-canvas" title="Feedback badge — point the sender\'s 2nd camera at this for adaptive tuning"></canvas>';
+    stage.innerHTML = '<video id="recv-video" playsinline autoplay muted></video><div class="legend">RX</div>';
     const video = document.getElementById('recv-video');
     video.srcObject = stream;
     await video.play();
@@ -726,7 +602,6 @@ document.getElementById('cam-toggle').addEventListener('click', async ()=>{
       ? 'Camera on — point at the sender\'s screen.'
       : 'Camera on — warming up the decoder…';
     scanLoop(video);
-    startFeedbackEmitter();
   } catch(err){
     document.getElementById('recv-status').textContent = 'Camera error: ' + err.message;
   }
@@ -753,7 +628,7 @@ async function scanLoop(video){
             const bytes = b64ToBytes(code.text);
             const frame = parseFrame(bytes);
             handleFrame(frame);
-          } catch(e){ recvState.parseFailures++; /* QR decoded but payload was garbled */ }
+          } catch(e){ /* partial/garbled read, ignore */ }
         }
       } catch(e){ /* decoder still loading, or no code found — ignore */ }
     }
@@ -764,24 +639,6 @@ function stopCamera(){
   recvState.active = false;
   if(scanRAF) cancelAnimationFrame(scanRAF);
   if(recvState.stream) recvState.stream.getTracks().forEach(t=>t.stop());
-  stopFeedbackEmitter();
-}
-
-/* ---- feedback badge emitter (lets a 2nd sender camera adapt rate/EC) ---- */
-let fbEmitTimer = null;
-function startFeedbackEmitter(){
-  fbEmitTimer = setInterval(()=>{
-    const canvas = document.getElementById('recv-feedback-canvas');
-    if(!canvas || !recvState.K) return; // no locked-on session yet
-    const text = buildFeedback(recvState.sessionId, recvState.known, recvState.K, recvState.parseFailures, recvState.framesRead);
-    QRCode.toCanvas(canvas, text, {errorCorrectionLevel:'L', margin:1, width:160}, (err)=>{
-      if(err) console.error(err);
-    });
-  }, 400);
-}
-function stopFeedbackEmitter(){
-  clearInterval(fbEmitTimer);
-  fbEmitTimer = null;
 }
 
 /* ================= TABS ================= */
@@ -793,6 +650,28 @@ function switchTab(which){
   document.getElementById('panel-send').classList.toggle('active', which==='send');
   document.getElementById('panel-recv').classList.toggle('active', which==='recv');
 }
+
+// ---- Live clock ----
+(function clockTick(){
+  const el = document.getElementById('live-clock');
+  if(el){
+    const now = new Date();
+    const hh = String(now.getHours()).padStart(2,'0');
+    const mm = String(now.getMinutes()).padStart(2,'0');
+    const ss = String(now.getSeconds()).padStart(2,'0');
+    el.textContent = hh + ':' + mm + ':' + ss;
+  }
+  setTimeout(clockTick, 1000);
+})();
+
+// ---- Elapsed time helpers ----
+function fmtDuration(ms){
+  const s = Math.floor(ms/1000);
+  if(s < 60) return s + 's';
+  const m = Math.floor(s/60), rem = s%60;
+  return m + 'm ' + String(rem).padStart(2,'0') + 's';
+}
+
 </script>
 </body>
 </html>
