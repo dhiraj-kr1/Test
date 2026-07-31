@@ -601,11 +601,46 @@ document.getElementById('cam-toggle').addEventListener('click', async ()=>{
     document.getElementById('recv-status').textContent = zxingReady
       ? 'Camera on — point at the sender\'s screen.'
       : 'Camera on — warming up the decoder…';
+    await applyQrFocusMode(stream);
     scanLoop(video);
   } catch(err){
     document.getElementById('recv-status').textContent = 'Camera error: ' + err.message;
   }
 });
+
+// Try to keep the camera focused on a nearby QR code (arm's-length range).
+// Falls back gracefully on devices/browsers that don't expose focus controls.
+async function applyQrFocusMode(stream){
+  try{
+    const track = stream.getVideoTracks()[0];
+    if(!track || !track.getCapabilities) return;
+    const caps = track.getCapabilities();
+    if(!caps.focusMode) return; // no focus control exposed on this device/browser
+
+    if(caps.focusMode.includes('continuous')){
+      // Best case: camera keeps re-focusing on its own as the phone moves.
+      await track.applyConstraints({ advanced: [{ focusMode: 'continuous' }] });
+    } else if(caps.focusMode.includes('single-shot')){
+      // No continuous AF available — trigger a fresh single-shot focus pass
+      // periodically so the lens doesn't drift to infinity while idle.
+      const refocus = async () => {
+        if(!recvState.active) return;
+        try{ await track.applyConstraints({ advanced: [{ focusMode: 'single-shot' }] }); }catch(e){}
+      };
+      refocus();
+      recvState.focusInterval = setInterval(refocus, 2000);
+    }
+
+    // Bias toward close-up focus if the device lets us set a distance directly.
+    if(caps.focusDistance && typeof caps.focusDistance.min === 'number'){
+      try{
+        await track.applyConstraints({ advanced: [{ focusDistance: caps.focusDistance.min }] });
+      } catch(e){ /* ignore — not all browsers allow combining with focusMode */ }
+    }
+  } catch(e){
+    console.warn('QR focus mode not applied:', e);
+  }
+}
 
 async function scanLoop(video){
   if(!recvState.active) return;
@@ -638,6 +673,7 @@ async function scanLoop(video){
 function stopCamera(){
   recvState.active = false;
   if(scanRAF) cancelAnimationFrame(scanRAF);
+  if(recvState.focusInterval){ clearInterval(recvState.focusInterval); recvState.focusInterval = null; }
   if(recvState.stream) recvState.stream.getTracks().forEach(t=>t.stop());
 }
 
