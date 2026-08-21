@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta content="width=device-width, initial-scale=1.0" name="viewport">
-<title>Intreo - Intelligent AI interview platform</title>
+<title>Intreo - Intelligent AI Interview Platform</title>
 <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap" rel="stylesheet">
 <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
 <style>
@@ -4512,7 +4512,7 @@
   function buildSystemPrompt() {
     var cfg = window.interviewConfig || {};
     return [
-      'You are Kutu, a professional AI interviewer conducting a ' + (cfg.interviewType || 'general') + ' interview.',
+      'You are Karia, a professional AI interviewer conducting a ' + (cfg.interviewType || 'general') + ' interview.',
       'Position: ' + (cfg.position || 'unspecified') + '.',
       'Candidate: ' + (cfg.candidateName || 'the candidate') + '.',
       'Experience level: ' + (cfg.experience || 'unspecified') + '.',
@@ -4613,7 +4613,7 @@
       // Interleave: system + history + current
       var combined = systemMsg + '\n\n--- CONVERSATION SO FAR ---\n';
       ivConversationHistory.forEach(function (m) {
-        combined += (m.role === 'ai' ? 'Kutu: ' : 'Candidate: ') + m.content + '\n';
+        combined += (m.role === 'ai' ? 'Karia: ' : 'Candidate: ') + m.content + '\n';
       });
       combined += '\n--- CURRENT TASK ---\n' + promptText;
       messages = [{ parts: [{ text: combined }] }];
@@ -4638,11 +4638,23 @@
   // ---- Intro sequence then questions ----
   var answerTimer = null;
 
+  var INTRO_BY_TYPE = {
+    hr:                   function (name, pos) { return 'Hi ' + name + '! I\'m Karia, and I\'ll be interviewing you today for the ' + pos + ' role. We\'ll have a 20 to 25 minute conversation about your experience, workplace preferences, and how you approach different situations. Take your time with your responses, and feel free to ask if you\'d like me to repeat or clarify anything. Shall we begin?'; },
+    technical:            function (name, pos) { return 'Hi ' + name + '! I\'m Karia, and I\'ll be your interviewer today for the ' + pos + ' role. We\'ll spend around 20 to 25 minutes discussing your technical knowledge, problem-solving approach, and relevant experience. I\'d like to understand your thought process as you work through the questions. Take your time, and let me know if you need any clarification. Ready to get started?'; },
+    behavioral:           function (name, pos) { return 'Hi ' + name + '! I\'m Karia, and I\'ll be interviewing you today for the ' + pos + ' role. Over the next 20 to 25 minutes, we\'ll talk about your past experiences, decision-making, teamwork, and how you handle different situations. Feel free to take a moment to think before answering, and ask if you\'d like me to clarify anything. Shall we begin?'; },
+    resume_based:         function (name, pos) { return 'Hi ' + name + '! I\'m Karia, and I\'ll be interviewing you today for the ' + pos + ' role. We\'ll spend about 20 to 25 minutes exploring your resume, including your experience, projects, skills, and achievements. I\'ll ask a few follow-up questions to better understand your contributions and experiences. Take your time, and feel free to ask for clarification whenever needed. Ready to begin?'; },
+    fresher:              function (name, pos) { return 'Hi ' + name + '! I\'m Karia, and I\'ll be interviewing you today for the ' + pos + ' role. This will be a 20 to 25 minute conversation about your education, projects, skills, interests, and approach to learning and problem-solving. I\'m looking forward to understanding your strengths and potential. Take your time with your answers, and let me know if you need any clarification. Shall we get started?'; },
+    english_communication:function (name, pos) { return 'Hi ' + name + '! I\'m Karia, and I\'ll be speaking with you today for the ' + pos + ' role. This 20 to 25 minute conversation will focus on how clearly and confidently you communicate your thoughts in English. Just speak naturally and express your ideas in your own words. Take your time, and feel free to ask me to repeat or clarify anything. Shall we begin?'; },
+  };
+
   function runIntroSequence(name, position) {
     initSpeechRecognition();
     initTTS();
 
-    var introText = 'Hey ' + name + '! I\'m Kutu, your AI interviewer for the ' + position + ' role. Quick heads up: this will take about 20 to 25 minutes. I\'ll ask about your experience, there are no trick questions, and if you need a moment to think, that\'s completely fine. Just speak naturally — I\'m listening. Ready to get started?';
+    var cfg = window.interviewConfig || {};
+    var interviewType = cfg.interviewType || 'hr';
+    var introFn = INTRO_BY_TYPE[interviewType] || INTRO_BY_TYPE['hr'];
+    var introText = introFn(name, position);
 
     addAiMessage(introText);
     speak(introText, function () {
