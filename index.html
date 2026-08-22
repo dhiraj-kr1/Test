@@ -3052,7 +3052,7 @@ work_history
         </div>
         <div class="iv-chat-hint" id="iv-chat-hint-text">Please wait while Karia is speaking…</div>
         <div class="iv-no-stt" id="iv-no-stt-notice" style="display:none;">
-          ⚠ Speech recognition not available in this browser. Use Chrome or Edge for voice input.
+          ⚠ Voice input is not supported in this browser. Please use Chrome or Edge.
         </div>
       </div>
     </div>
@@ -3549,7 +3549,7 @@ description
     clearTimeout(speechSilenceTimer);
     onAnswerReady = null;
     liveTranscriptEl = null;
-    if (window.speechSynthesis) window.speechSynthesis.cancel();
+    stopGeminiTTS(); if (window.speechSynthesis) window.speechSynthesis.cancel();
     ivConversationHistory = [];
     ivEvaluations = [];
     ivAskedQuestions = [];
@@ -4433,6 +4433,7 @@ description
     if (micStream) {
       ivWaveCanvas.style.display = 'block';
       startIvWaveform(micStream, ivWaveCanvas);
+      window._ivMicStream = micStream; // expose for Gemini STT recorder
     }
 
     // Show interview page, hide setup flow
@@ -4447,88 +4448,180 @@ description
     setTimeout(function () { runIntroSequence(name, config.position || 'this role'); }, 600);
   }
 
-  // ===================== SPEECH-TO-TEXT (Web Speech API) =====================
-  var SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-  var recognition = null;
-  var isListening = false;
-  var currentTranscript = '';
-  var speechSilenceTimer = null;
-  var onAnswerReady = null; // callback(transcript)
-  var ivInterviewActive = false; // set true when interview starts, false on any exit
+  // ===================== SPEECH-TO-TEXT (Gemini STT + Web Speech fallback) =====================
+  // Strategy:
+  //   1. MediaRecorder captures raw audio the whole time the user speaks.
+  //   2. Web Speech API (if available) provides live interim captions only — no commit logic.
+  //   3. On silence (2.5 s of no Web Speech activity) OR manual commit, the recorded audio
+  //      blob is sent to Gemini's multimodal generateContent endpoint for final transcription.
+  //      This reuses the same Gemini API key already entered by the user.
+  //   4. If Gemini STT fails for any reason, we fall back to whatever Web Speech captured.
 
+  var SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+  var recognition       = null;
+  var isListening       = false;
+  var currentTranscript = '';   // confirmed final text (from Gemini or Web Speech)
+  var interimTranscript = '';   // live interim from Web Speech (display only)
+  var speechSilenceTimer = null;
+  var onAnswerReady     = null; // callback(transcript)
+  var ivInterviewActive = false;
+
+  // MediaRecorder state
+  var mediaRecorder     = null;
+  var audioChunks       = [];
+  var recordingStream   = null;  // kept separately so we can stop tracks
+
+  // ---- Gemini STT ----
+  function transcribeWithGemini(audioBlob, fallbackText, callback) {
+    var cfg = window.interviewConfig || {};
+    var key = cfg.geminiApiKey;
+    if (!key || !audioBlob || audioBlob.size < 1000) {
+      // blob too small or no key — use Web Speech fallback
+      callback(fallbackText || '');
+      return;
+    }
+
+    var reader = new FileReader();
+    reader.onloadend = function () {
+      var base64Audio = reader.result.split(',')[1];
+      var mimeType    = audioBlob.type || 'audio/webm';
+
+      // Pick model: prefer flash for speed
+      var model = (cfg.geminiModel || 'gemini-2.5-flash')
+                    .replace('gemini-3.', 'gemini-2.').replace('gemini-3-', 'gemini-2.0-');
+      // Always use a real Gemini model that supports audio
+      var sttModel = 'gemini-2.0-flash';
+
+      var payload = {
+        contents: [{
+          parts: [
+            { text: 'Transcribe the following audio exactly as spoken. Return only the spoken text, nothing else. No explanations, no punctuation corrections — just the raw transcript.' },
+            { inline_data: { mime_type: mimeType, data: base64Audio } }
+          ]
+        }]
+      };
+
+      fetch('https://generativelanguage.googleapis.com/v1beta/models/' + sttModel + ':generateContent?key=' + encodeURIComponent(key), {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify(payload)
+      })
+      .then(function (r) { return r.json(); })
+      .then(function (data) {
+        var text = '';
+        if (data.candidates && data.candidates[0] && data.candidates[0].content) {
+          text = data.candidates[0].content.parts.map(function (p) { return p.text || ''; }).join('').trim();
+        }
+        callback(text || fallbackText || '');
+      })
+      .catch(function () {
+        callback(fallbackText || '');
+      });
+    };
+    reader.readAsDataURL(audioBlob);
+  }
+
+  // ---- Web Speech (interim captions only) ----
   function initSpeechRecognition() {
     if (!SpeechRecognition) return;
     recognition = new SpeechRecognition();
-    recognition.continuous = true;
-    recognition.interimResults = true;
-    recognition.lang = 'en-US';
+    recognition.continuous      = true;
+    recognition.interimResults  = true;
+    recognition.lang            = 'en-US';
     recognition.maxAlternatives = 1;
 
     recognition.onresult = function (event) {
       var interim = '';
-      var final = '';
+      var finalChunk = '';
       for (var i = event.resultIndex; i < event.results.length; i++) {
         var t = event.results[i][0].transcript;
-        if (event.results[i].isFinal) { final += t; }
+        if (event.results[i].isFinal) { finalChunk += t; }
         else { interim += t; }
       }
-      if (final) {
-        currentTranscript += (currentTranscript ? ' ' : '') + final.trim();
-        updateLiveTranscript(currentTranscript, '');
-      } else {
-        updateLiveTranscript(currentTranscript, interim);
-      }
-      // Reset silence timer — commit answer after 2.5 s of no new speech
+      // Accumulate into interimTranscript for display; Gemini handles final
+      interimTranscript = interim;
+      updateLiveTranscript('', interimTranscript);
+
+      // Reset silence timer on any speech activity
       clearTimeout(speechSilenceTimer);
-      if (currentTranscript) {
-        speechSilenceTimer = setTimeout(function () {
-          commitAnswer();
-        }, 2500);
-      }
+      speechSilenceTimer = setTimeout(function () {
+        if (isListening) commitAnswer();
+      }, 2500);
     };
 
     recognition.onerror = function (e) {
       if (e.error === 'no-speech' || e.error === 'aborted') return;
-      console.warn('Speech error:', e.error);
+      console.warn('Web Speech error:', e.error);
     };
 
     recognition.onend = function () {
-      // Auto-restart while listening is active (Chrome stops after ~60 s)
       if (isListening) {
         try { recognition.start(); } catch(e) {}
       }
     };
   }
 
-  // Live "ghost" transcript bubble shown while the candidate speaks
-  var liveTranscriptEl = null;
-  function updateLiveTranscript(final, interim) {
-    if (!liveTranscriptEl) {
-      liveTranscriptEl = document.createElement('div');
-      liveTranscriptEl.className = 'iv-msg iv-msg-user';
-      liveTranscriptEl.innerHTML =
-        '<div class="iv-msg-avatar"><span class="material-symbols-outlined">person</span></div>' +
-        '<div class="iv-bubble iv-bubble-live"><div class="iv-bubble-label">You</div><span class="live-final"></span><span class="live-interim"></span></div>';
-      ivMessages.appendChild(liveTranscriptEl);
+  // ---- MediaRecorder helpers ----
+  function startMediaRecorder(stream) {
+    audioChunks = [];
+    var mimeType = '';
+    var types = ['audio/webm;codecs=opus','audio/webm','audio/ogg;codecs=opus','audio/ogg','audio/mp4'];
+    for (var i = 0; i < types.length; i++) {
+      if (MediaRecorder.isTypeSupported(types[i])) { mimeType = types[i]; break; }
     }
-    liveTranscriptEl.querySelector('.live-final').textContent = final;
-    liveTranscriptEl.querySelector('.live-interim').textContent = interim ? ' ' + interim : '';
-    ivMessages.scrollTop = ivMessages.scrollHeight;
+    try {
+      mediaRecorder = new MediaRecorder(stream, mimeType ? { mimeType: mimeType } : {});
+    } catch(e) {
+      mediaRecorder = new MediaRecorder(stream);
+    }
+    mediaRecorder.ondataavailable = function (e) {
+      if (e.data && e.data.size > 0) audioChunks.push(e.data);
+    };
+    mediaRecorder.start(250); // collect chunks every 250 ms
   }
 
-  function clearLiveTranscript() {
-    if (liveTranscriptEl) { liveTranscriptEl.remove(); liveTranscriptEl = null; }
+  function stopMediaRecorder(callback) {
+    if (!mediaRecorder || mediaRecorder.state === 'inactive') {
+      callback(null); return;
+    }
+    mediaRecorder.onstop = function () {
+      var mimeType = mediaRecorder.mimeType || 'audio/webm';
+      var blob = new Blob(audioChunks, { type: mimeType });
+      audioChunks = [];
+      callback(blob);
+    };
+    try { mediaRecorder.stop(); } catch(e) { callback(null); }
   }
 
+  // ---- Public STT interface ----
   function startListening(callback) {
-    // Don't restart listening if the interview has already ended (e.g. ESC pressed).
     if (!ivInterviewActive) return;
     currentTranscript = '';
-    onAnswerReady = callback;
-    isListening = true;
-    setMicListening(true);
+    interimTranscript = '';
+    onAnswerReady     = callback;
+    isListening       = true;
+    setMicListening('listening');
+
+    // Start Web Speech for live captions
     if (recognition) {
       try { recognition.start(); } catch(e) {}
+    }
+
+    // Start MediaRecorder using the existing mic stream if available,
+    // or request a fresh one
+    var existingStream = window._ivMicStream || null;
+    if (existingStream && existingStream.active) {
+      startMediaRecorder(existingStream);
+    } else {
+      navigator.mediaDevices.getUserMedia({ audio: true, video: false })
+        .then(function (stream) {
+          recordingStream = stream;
+          window._ivMicStream = stream;
+          startMediaRecorder(stream);
+        })
+        .catch(function () {
+          // No mic access — Web Speech only (already started above)
+        });
     }
   }
 
@@ -4536,104 +4629,187 @@ description
     isListening = false;
     clearTimeout(speechSilenceTimer);
     if (recognition) { try { recognition.stop(); } catch(e) {} }
-    setMicListening(false);
+    setMicListening('processing');
   }
 
   function commitAnswer() {
-    var answer = currentTranscript.trim();
+    if (!isListening) return; // guard against double-commit
     stopListening();
     clearLiveTranscript();
-    if (answer) {
-      addUserMessage(answer);
-    } else {
-      answer = '(No response detected)';
-      addUserMessage(answer);
-    }
-    if (onAnswerReady) {
-      var cb = onAnswerReady;
-      onAnswerReady = null;
-      cb(answer);
-    }
+
+    var webSpeechFallback = interimTranscript.trim() || currentTranscript.trim();
+    interimTranscript = '';
+    currentTranscript = '';
+
+    // Stop recorder and transcribe with Gemini
+    stopMediaRecorder(function (audioBlob) {
+      transcribeWithGemini(audioBlob, webSpeechFallback, function (finalText) {
+        if (!ivInterviewActive) return; // interview ended while transcribing
+        var answer = finalText.trim() || '(No response detected)';
+        addUserMessage(answer);
+        if (onAnswerReady) {
+          var cb = onAnswerReady;
+          onAnswerReady = null;
+          cb(answer);
+        }
+      });
+    });
   }
 
-  // ===================== TEXT-TO-SPEECH (speechSynthesis) =====================
-  var ttsEnabled = true;
-  var ttsVoice = null;
-  var ttsVoiceConfirmedFemale = false; // only true if we're confident the voice is female
 
+  // ===================== TEXT-TO-SPEECH (Gemini TTS + browser fallback) =====================
+  // Primary: Gemini TTS API (gemini-2.5-flash-preview-tts) — natural female voice "Zephyr".
+  // Fallback: browser speechSynthesis, used when Gemini key is absent or API call fails.
+
+  var ttsEnabled   = true;
+  var ttsAudioCtx  = null;  // Web Audio context for playing Gemini PCM audio
+  var ttsCurrentSource = null; // currently playing AudioBufferSourceNode
+  var ttsFallbackVoice = null;
+  var ttsFallbackVoiceReady = false;
+
+  // ---- Browser fallback voice selection (kept as backup) ----
   function initTTS() {
     if (!window.speechSynthesis) return;
     function pickVoice() {
       var voices = window.speechSynthesis.getVoices();
-      ttsVoice = null;
-      ttsVoiceConfirmedFemale = false;
-
-      // Exact-name whitelist of known female voices across platforms/engines.
+      ttsFallbackVoice = null;
+      ttsFallbackVoiceReady = false;
       var preferredFemale = [
-        'Google UK English Female',
-        'Google US English Female',
-        'Samantha',         // macOS / iOS — female
-        'Karen',            // macOS Australian — female
-        'Victoria',         // macOS — female
-        'Moira',            // macOS Irish — female
-        'Tessa',            // macOS South African — female
-        'Fiona',            // macOS Scottish — female
-        'Kate',             // Windows — female
-        'Hazel',            // Windows UK — female
-        'Zira',             // Windows US — female
-        'Susan',            // Windows — female
-        'Aria',             // Windows / Edge — female
-        'Jenny',            // Edge/Azure — female
+        'Google UK English Female','Google US English Female',
+        'Samantha','Karen','Victoria','Moira','Tessa','Fiona',
+        'Kate','Hazel','Zira','Susan','Aria','Jenny',
         'Microsoft Zira - English (United States)',
         'Microsoft Hazel - English (United Kingdom)',
-        'Microsoft Susan - English (United States)',
         'Microsoft Aria Online (Natural) - English (United States)',
         'Microsoft Jenny Online (Natural) - English (United States)',
       ];
       for (var i = 0; i < preferredFemale.length; i++) {
         var v = voices.find(function (v) { return v.name === preferredFemale[i]; });
-        if (v) { ttsVoice = v; ttsVoiceConfirmedFemale = true; return; }
+        if (v) { ttsFallbackVoice = v; ttsFallbackVoiceReady = true; return; }
       }
-
-      // Broader keyword match for female voices from engines not covered above.
-      var femaleKeywords = /female|woman|girl|zira|hazel|karen|samantha|victoria|moira|tessa|fiona|kate|susan|aria|jenny|zoe|emma|ava|sara|nicole|amy|joanna|salli|kimberly/i;
-      var maleKeywords = /\b(male|man|boy|guy)\b|daniel|alex(?!a)|david|george|mark|fred|james|thomas|oliver|ryan|eric|paul|arthur|rishi|liam|noah|matthew|christopher|brian/i;
-      var femaleVoice = voices.find(function (v) {
-        return v.lang.startsWith('en') && femaleKeywords.test(v.name) && !maleKeywords.test(v.name);
-      });
-      if (femaleVoice) { ttsVoice = femaleVoice; ttsVoiceConfirmedFemale = true; return; }
-
-      // No confirmed female voice on this system — leave ttsVoice unset.
-      // speak() will compensate so playback never sounds male, instead of
-      // silently falling back to whatever the browser's default voice is.
+      var femaleKw = /female|woman|girl|zira|hazel|karen|samantha|victoria|moira|tessa|fiona|kate|susan|aria|jenny|zoe|emma|ava|sara|nicole|amy|joanna|salli|kimberly/i;
+      var maleKw   = /\b(male|man|boy|guy)\b|daniel|alex(?!a)|david|george|mark|fred|james|thomas|oliver|ryan|eric|paul|arthur|rishi|liam|noah|matthew|christopher|brian/i;
+      var fv = voices.find(function (v) { return v.lang.startsWith('en') && femaleKw.test(v.name) && !maleKw.test(v.name); });
+      if (fv) { ttsFallbackVoice = fv; ttsFallbackVoiceReady = true; }
     }
     pickVoice();
     window.speechSynthesis.onvoiceschanged = pickVoice;
   }
 
-  function speak(text, onEnd) {
-    if (!ttsEnabled || !window.speechSynthesis) { if (onEnd) onEnd(); return; }
-    window.speechSynthesis.cancel();
-    setMicListening('speaking');
-    var utt = new SpeechSynthesisUtterance(text);
-    if (ttsVoice && ttsVoiceConfirmedFemale) {
-      // Only ever use a voice we're confident is female, exactly as selected.
-      utt.voice = ttsVoice;
+  // ---- Gemini TTS ----
+  // Converts base64 Linear16 PCM (24 kHz mono) from Gemini into playable audio.
+  function playPCMBase64(b64, sampleRate, onEnd) {
+    try {
+      if (!ttsAudioCtx || ttsAudioCtx.state === 'closed') {
+        ttsAudioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      }
+      // Resume if suspended (browser autoplay policy)
+      var resumeP = ttsAudioCtx.state === 'suspended' ? ttsAudioCtx.resume() : Promise.resolve();
+      resumeP.then(function () {
+        var raw    = atob(b64);
+        var bytes  = new Uint8Array(raw.length);
+        for (var i = 0; i < raw.length; i++) bytes[i] = raw.charCodeAt(i);
+
+        // Linear16 = 16-bit signed PCM, little-endian
+        var samples = bytes.length / 2;
+        var buf     = ttsAudioCtx.createBuffer(1, samples, sampleRate);
+        var channel = buf.getChannelData(0);
+        var view    = new DataView(bytes.buffer);
+        for (var j = 0; j < samples; j++) {
+          channel[j] = view.getInt16(j * 2, true) / 32768;
+        }
+
+        if (ttsCurrentSource) { try { ttsCurrentSource.stop(); } catch(e) {} }
+        var src    = ttsAudioCtx.createBufferSource();
+        src.buffer = buf;
+        src.connect(ttsAudioCtx.destination);
+        ttsCurrentSource = src;
+        src.onended = function () { ttsCurrentSource = null; if (onEnd) onEnd(); };
+        src.start();
+      });
+    } catch(e) {
+      if (onEnd) onEnd();
+    }
+  }
+
+  function stopGeminiTTS() {
+    if (ttsCurrentSource) {
+      try { ttsCurrentSource.stop(); } catch(e) {}
+      ttsCurrentSource = null;
+    }
+  }
+
+  function speakWithGemini(text, onEnd) {
+    var cfg = window.interviewConfig || {};
+    var key = cfg.geminiApiKey;
+    if (!key) { speakWithBrowser(text, onEnd); return; }
+
+    var payload = {
+      model: 'gemini-2.5-flash-preview-tts',
+      contents: [{ parts: [{ text: text }] }],
+      generationConfig: {
+        responseModalities: ['AUDIO'],
+        speechConfig: {
+          voiceConfig: {
+            prebuiltVoiceConfig: { voiceName: 'Zephyr' } // natural female voice
+          }
+        }
+      }
+    };
+
+    fetch('https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-tts:generateContent?key=' + encodeURIComponent(key), {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify(payload)
+    })
+    .then(function (r) { return r.json(); })
+    .then(function (data) {
+      if (!ivInterviewActive) return;
+      var part = data.candidates &&
+                 data.candidates[0] &&
+                 data.candidates[0].content &&
+                 data.candidates[0].content.parts &&
+                 data.candidates[0].content.parts[0];
+      if (part && part.inlineData && part.inlineData.data) {
+        // Gemini TTS returns Linear16 PCM at 24000 Hz
+        playPCMBase64(part.inlineData.data, 24000, function () {
+          if (ivInterviewActive && onEnd) onEnd();
+        });
+      } else {
+        // API responded but no audio — fall back to browser
+        speakWithBrowser(text, onEnd);
+      }
+    })
+    .catch(function () {
+      if (ivInterviewActive) speakWithBrowser(text, onEnd);
+    });
+  }
+
+  function speakWithBrowser(text, onEnd) {
+    if (!window.speechSynthesis) { if (onEnd) onEnd(); return; }
+    stopGeminiTTS(); if (window.speechSynthesis) window.speechSynthesis.cancel();
+    var utt   = new SpeechSynthesisUtterance(text);
+    if (ttsFallbackVoice && ttsFallbackVoiceReady) {
+      utt.voice = ttsFallbackVoice;
       utt.pitch = 1.0;
     } else {
-      // No confirmed female voice available on this system. Rather than let
-      // the browser's own (possibly male) default voice play unmodified,
-      // shift the pitch up so it never reads as a male voice.
       utt.pitch = 1.4;
     }
-    utt.rate  = 0.97;
-    utt.volume= 1.0;
-    // Guard: don't fire the onEnd callback if the interview was already stopped.
-    // speechSynthesis.cancel() triggers onend/onerror on the current utterance,
-    // which would restart the listening loop even after ESC / End Interview.
-    utt.onend = function () { if (ivInterviewActive && onEnd) onEnd(); };
+    utt.rate   = 0.97;
+    utt.volume = 1.0;
+    utt.onend  = function () { if (ivInterviewActive && onEnd) onEnd(); };
     utt.onerror = function () { if (ivInterviewActive && onEnd) onEnd(); };
     window.speechSynthesis.speak(utt);
+  }
+
+  // ---- Public speak() — used everywhere in the interview flow ----
+  function speak(text, onEnd) {
+    if (!ttsEnabled) { if (onEnd) onEnd(); return; }
+    // Stop any currently playing audio
+    stopGeminiTTS();
+    if (window.speechSynthesis) window.speechSynthesis.cancel();
+    setMicListening('speaking');
+    speakWithGemini(text, onEnd);
   }
 
   // ===================== INTERVIEW CONTROLLER =====================
@@ -4986,7 +5162,7 @@ description
   function endInterviewFlow() {
     clearTimeout(answerTimer);
     stopListening();
-    window.speechSynthesis && window.speechSynthesis.cancel();
+    stopGeminiTTS(); if (window.speechSynthesis) window.speechSynthesis.cancel();
 
     var closingText = 'It was really nice talking with you today. Thank you so much for your time — you did great!';
     showTyping(function () {
@@ -5024,7 +5200,7 @@ description
     // Stop the interview waveform's render loop + close its audio context
     // so nothing keeps running in the background after the interview ends.
     stopIvWaveform();
-    window.speechSynthesis && window.speechSynthesis.cancel();
+    stopGeminiTTS(); if (window.speechSynthesis) window.speechSynthesis.cancel();
     if (recognition) { try { recognition.abort(); } catch (e) {} recognition = null; }
     clearTimeout(speechSilenceTimer);
 
@@ -5287,7 +5463,7 @@ description
   // ---- TTS toggle ----
   document.getElementById('iv-tts-toggle').addEventListener('click', function () {
     ttsEnabled = !ttsEnabled;
-    if (!ttsEnabled && window.speechSynthesis) window.speechSynthesis.cancel();
+    if (!ttsEnabled) { stopGeminiTTS(); if (window.speechSynthesis) window.speechSynthesis.cancel(); }
     var btn = this;
     var icon = btn.querySelector('.material-symbols-outlined');
     var label = document.getElementById('iv-tts-label');
@@ -5303,10 +5479,14 @@ description
   });
 
   // ---- STT availability check ----
+  // Gemini STT (MediaRecorder) works in all modern browsers regardless of Web Speech API.
+  // We only show the notice if BOTH Gemini key AND MediaRecorder are unavailable.
   (function () {
-    if (!window.SpeechRecognition && !window.webkitSpeechRecognition) {
+    var hasWebSpeech    = !!(window.SpeechRecognition || window.webkitSpeechRecognition);
+    var hasMediaRecorder = !!(window.MediaRecorder);
+    if (!hasWebSpeech && !hasMediaRecorder) {
       document.getElementById('iv-no-stt-notice').style.display = 'block';
-      document.getElementById('iv-chat-hint-text').textContent = 'Type or speak — voice may not be available in this browser.';
+      document.getElementById('iv-chat-hint-text').textContent = 'Voice input is not supported in this browser.';
     }
   })();
 
