@@ -3186,64 +3186,9 @@ description
         <div class="report-score-label">Overall Score</div>
       </div>
 
-      <!-- Sub-scores -->
+      <!-- Sub-scores — populated dynamically per round type -->
       <div class="report-subscores">
-        <div class="report-subscore-row">
-          <div class="report-subscore-header">
-            <span class="report-subscore-name">Communication</span>
-            <span class="report-subscore-val">8.7</span>
-          </div>
-          <div class="report-subscore-bar"><div class="report-subscore-bar-fill" style="width:87%"></div></div>
-        </div>
-        <div class="report-subscore-row">
-          <div class="report-subscore-header">
-            <span class="report-subscore-name">Problem Solving</span>
-            <span class="report-subscore-val">8.5</span>
-          </div>
-          <div class="report-subscore-bar"><div class="report-subscore-bar-fill" style="width:85%"></div></div>
-        </div>
-        <div class="report-subscore-row">
-          <div class="report-subscore-header">
-            <span class="report-subscore-name">Technical Skills</span>
-            <span class="report-subscore-val">8.4</span>
-          </div>
-          <div class="report-subscore-bar"><div class="report-subscore-bar-fill" style="width:84%"></div></div>
-        </div>
-        <div class="report-subscore-row">
-          <div class="report-subscore-header">
-            <span class="report-subscore-name">Culture Fit</span>
-            <span class="report-subscore-val">7.5</span>
-          </div>
-          <div class="report-subscore-bar"><div class="report-subscore-bar-fill" style="width:75%"></div></div>
-        </div>
-        <div class="report-subscore-row">
-          <div class="report-subscore-header">
-            <span class="report-subscore-name">Correctness</span>
-            <span class="report-subscore-val">8.2</span>
-          </div>
-          <div class="report-subscore-bar"><div class="report-subscore-bar-fill" style="width:82%"></div></div>
-        </div>
-        <div class="report-subscore-row">
-          <div class="report-subscore-header">
-            <span class="report-subscore-name">Confidence</span>
-            <span class="report-subscore-val">7.5</span>
-          </div>
-          <div class="report-subscore-bar"><div class="report-subscore-bar-fill" style="width:75%"></div></div>
-        </div>
-        <div class="report-subscore-row">
-          <div class="report-subscore-header">
-            <span class="report-subscore-name">Structure</span>
-            <span class="report-subscore-val">8.9</span>
-          </div>
-          <div class="report-subscore-bar"><div class="report-subscore-bar-fill" style="width:89%"></div></div>
-        </div>
-        <div class="report-subscore-row">
-          <div class="report-subscore-header">
-            <span class="report-subscore-name">Relevance</span>
-            <span class="report-subscore-val">7.3</span>
-          </div>
-          <div class="report-subscore-bar"><div class="report-subscore-bar-fill" style="width:73%"></div></div>
-        </div>
+        <!-- rows injected by JS based on interview type -->
       </div>
     </div>
 
@@ -3294,7 +3239,7 @@ description
 
         <div class="report-overall-feedback">
           <div class="report-overall-feedback-title">Overall Feedback</div>
-          <p id="report-overall-feedback-text">Your per-question evaluations will appear here after a completed interview. Each question contributes dimension scores across Communication, Problem Solving, Technical Skills, Culture Fit, Correctness, Structure, Confidence, and Relevance.</p>
+          <p id="report-overall-feedback-text">Your per-question evaluations will appear here after a completed interview.</p>
         </div>
 
       </div>
@@ -4773,6 +4718,47 @@ description
   var ivAnswerTimer = null;       // fallback timeout if STT not available
   var ivAskedQuestions = [];      // tracks every question asked to prevent repeats
 
+  var EVAL_DIMENSIONS_BY_TYPE = {
+    hr: [
+      'Confidence','Professionalism','Career Goals','Motivation',
+      'Company Awareness','Positive Attitude','Culture Fit','Adaptability',
+      'Flexibility','Etiquette','Salary Readiness','Relocation Readiness',
+      'Shift Readiness','HR Handling'
+    ],
+    technical: [
+      'Fundamentals','Core Knowledge','Problem Solving','Logical Thinking',
+      'Coding Skills','Practical Knowledge','Project Knowledge','Debugging',
+      'Technical Clarity','Resume Skills','Learning Ability','Technical Confidence'
+    ],
+    behavioral: [
+      'Communication','Teamwork','Collaboration','Ownership',
+      'Accountability','Decision Making','Leadership','Conflict Management',
+      'Time Management','Adaptability','Stress Management','Feedback Acceptance'
+    ],
+    resume_based: [
+      'Resume Accuracy','Resume Knowledge','Project Understanding','Project Ownership',
+      'Internship Knowledge','Skill Awareness','Achievement Clarity','Technical Exposure',
+      'Role Understanding','Resume Consistency','Practical Exposure','Self Awareness'
+    ],
+    fresher: [
+      'Learning Agility','Growth Mindset','Curiosity','Willingness to Learn',
+      'Initiative','Coachability','Work Readiness','Team Spirit',
+      'Professional Attitude','Career Commitment','Problem Solving','Adaptability'
+    ],
+    english_communication: [
+      'Fluency','Clarity','Grammar','Vocabulary',
+      'Pronunciation','Articulation','Listening','Comprehension',
+      'Sentence Formation','Communication','Confidence','Professionalism'
+    ]
+  };
+
+  function getEvalDimensions() {
+    var cfg = window.interviewConfig || {};
+    var type = cfg.interviewType || 'hr';
+    return EVAL_DIMENSIONS_BY_TYPE[type] || EVAL_DIMENSIONS_BY_TYPE['hr'];
+  }
+
+  // Legacy alias kept for any references below
   var EVAL_DIMENSIONS = [
     'Communication','Problem Solving','Technical Skills','Culture Fit',
     'Correctness','Structure','Confidence','Relevance'
@@ -4780,7 +4766,9 @@ description
 
   function buildSystemPrompt() {
     var cfg = window.interviewConfig || {};
-    return [
+    var dims = getEvalDimensions();
+    var evalFields = dims.map(function(dim) { return '    "' + dim + '": <0-10>,'; });
+    var lines = [
       'You are Karia, a professional AI interviewer conducting a ' + (cfg.interviewType || 'general') + ' interview.',
       'Position: ' + (cfg.position || 'unspecified') + '.',
       'Candidate: ' + (cfg.candidateName || 'the candidate') + '.',
@@ -4797,15 +4785,8 @@ description
       '  "action": one of ["nextQuestion","followUp","clarify","increaseDifficulty","decreaseDifficulty","hint","stayTopic","changeTopic","finish"],',
       '  "message": "Your spoken response to the candidate (warm, professional, concise)",',
       '  "question": "The next question to ask (omit if action is finish)",',
-      '  "evaluation": {',
-      '    "Communication": <0-10>,',
-      '    "Problem Solving": <0-10>,',
-      '    "Technical Skills": <0-10>,',
-      '    "Culture Fit": <0-10>,',
-      '    "Correctness": <0-10>,',
-      '    "Structure": <0-10>,',
-      '    "Confidence": <0-10>,',
-      '    "Relevance": <0-10>,',
+      '  "evaluation": {'
+    ].concat(evalFields).concat([
       '    "summary": "One sentence feedback"',
       '  }',
       '}',
@@ -4835,8 +4816,9 @@ description
       'CRITICAL RULE — NO REPEAT QUESTIONS:',
       'You MUST NOT ask any question that is the same as, or substantially similar to, any question in the list above.',
       'Before generating a new question, mentally check it against every question already asked.',
-      'If you find yourself about to repeat a topic or phrasing, pivot to a completely different area.',
-    ].filter(Boolean).join('\n');
+      'If you find yourself about to repeat a topic or phrasing, pivot to a completely different area.'
+    ]);
+    return lines.filter(Boolean).join('\n');
   }
 
   function buildFirstQuestionPrompt() {
@@ -5199,25 +5181,26 @@ description
     }
 
     // ---- Compute scores from ivEvaluations ----
+    var currentDims = getEvalDimensions();
     var dimTotals = {};
-    EVAL_DIMENSIONS.forEach(function (d) { dimTotals[d] = 0; });
+    currentDims.forEach(function (d) { dimTotals[d] = 0; });
     var evalCount = ivEvaluations.length;
 
     if (evalCount > 0) {
       ivEvaluations.forEach(function (ev) {
         var eval_ = ev.evaluation || {};
-        EVAL_DIMENSIONS.forEach(function (d) {
+        currentDims.forEach(function (d) {
           dimTotals[d] += parseFloat(eval_[d] || 0);
         });
       });
 
       // Averages
       var dimAvgs = {};
-      EVAL_DIMENSIONS.forEach(function (d) {
+      currentDims.forEach(function (d) {
         dimAvgs[d] = Math.round((dimTotals[d] / evalCount) * 10) / 10;
       });
 
-      var overallAvg = EVAL_DIMENSIONS.reduce(function (s, d) { return s + dimAvgs[d]; }, 0) / EVAL_DIMENSIONS.length;
+      var overallAvg = currentDims.reduce(function (s, d) { return s + dimAvgs[d]; }, 0) / currentDims.length;
       overallAvg = Math.round(overallAvg * 10) / 10;
 
       // Update ring
@@ -5242,10 +5225,16 @@ description
       }
 
       // Update sub-score bars
+      // Rebuild subscore rows dynamically for this round type
+      var subscoresContainer = document.querySelector('.report-subscores');
+      if (subscoresContainer) {
+        subscoresContainer.innerHTML = currentDims.map(function(dim) {
+          return '<div class="report-subscore-row"><div class="report-subscore-header"><span class="report-subscore-name">' + dim + '</span><span class="report-subscore-val">—</span></div><div class="report-subscore-bar"><div class="report-subscore-bar-fill" style="width:0%"></div></div></div>';
+        }).join('');
+      }
       var rows = document.querySelectorAll('.report-subscore-row');
-      var dimOrder = ['Communication','Problem Solving','Technical Skills','Culture Fit','Correctness','Structure','Confidence','Relevance'];
       rows.forEach(function (row, i) {
-        var dim = dimOrder[i];
+        var dim = currentDims[i];
         if (!dim) return;
         var val = dimAvgs[dim] || 0;
         row.querySelector('.report-subscore-name').textContent = dim;
@@ -5255,8 +5244,8 @@ description
       });
 
       // Performance summary from evaluations
-      var strengths = dimOrder.filter(function (d) { return dimAvgs[d] >= 7; });
-      var improvements = dimOrder.filter(function (d) { return dimAvgs[d] < 6; });
+      var strengths = currentDims.filter(function (d) { return dimAvgs[d] >= 7; });
+      var improvements = currentDims.filter(function (d) { return dimAvgs[d] < 6; });
 
       var strongList = document.querySelector('.report-perf-list.strong');
       var improveList = document.querySelector('.report-perf-list.improve');
@@ -5293,13 +5282,84 @@ description
       var practiceList = document.getElementById('report-practice-list');
       if (practiceList && improvements.length) {
         var practiceMap = {
-          'Communication': 'Practice speaking clearly and concisely — record yourself and review',
-          'Problem Solving': 'Work through algorithmic challenges and case studies daily',
-          'Technical Skills': 'Deepen hands-on project experience in the required tech stack',
+          // HR Round
+          'Confidence': 'Mock interview practice — familiarity builds confidence over time',
+          'Professionalism': 'Dress appropriately, maintain eye contact, and speak formally',
+          'Career Goals': 'Articulate your short-term and long-term goals with clarity',
+          'Motivation': 'Reflect on and communicate what genuinely drives you',
+          'Company Awareness': 'Research the company thoroughly before every interview',
+          'Positive Attitude': 'Practice reframing challenges as opportunities in your answers',
           'Culture Fit': 'Research company values and prepare alignment stories',
+          'Adaptability': 'Prepare examples of how you have adjusted to changing situations',
+          'Flexibility': 'Highlight your openness to varied schedules, roles, or locations',
+          'Etiquette': 'Practice professional greetings, punctuality, and follow-up etiquette',
+          'Salary Readiness': 'Research market rates and prepare a confident salary expectation answer',
+          'Relocation Readiness': 'Clarify your stance on relocation and communicate it clearly',
+          'Shift Readiness': 'Be clear and consistent about your availability for shifts',
+          'HR Handling': 'Practice answering HR-specific questions with composure and honesty',
+          // Technical Round
+          'Fundamentals': 'Revisit core CS fundamentals — data structures, algorithms, OS concepts',
+          'Core Knowledge': 'Strengthen your subject-specific knowledge with targeted study',
+          'Problem Solving': 'Work through algorithmic challenges and case studies daily',
+          'Logical Thinking': 'Practice logical reasoning puzzles and flowchart-based problems',
+          'Coding Skills': 'Write and review code daily; focus on clean, efficient solutions',
+          'Practical Knowledge': 'Build or contribute to real projects to deepen hands-on experience',
+          'Project Knowledge': 'Be ready to explain every aspect of your listed projects in depth',
+          'Debugging': 'Practice identifying and fixing bugs in unfamiliar code bases',
+          'Technical Clarity': 'Practice explaining complex concepts in simple, structured terms',
+          'Resume Skills': 'Ensure you can speak confidently about every skill listed on your resume',
+          'Learning Ability': 'Demonstrate curiosity — share recent things you have learned',
+          'Technical Confidence': 'Approach unfamiliar problems calmly by thinking aloud',
+          // Behavioral / Fresher Round
+          'Teamwork': 'Prepare STAR-format stories highlighting your contribution in a team',
+          'Collaboration': 'Share examples of effective cross-functional or cross-team work',
+          'Ownership': 'Describe situations where you took initiative without being asked',
+          'Accountability': 'Be honest about past mistakes and what you learned from them',
+          'Decision Making': 'Prepare examples of decisions you made under uncertainty',
+          'Leadership': 'Highlight moments where you led a group or influenced outcomes',
+          'Conflict Management': 'Practice describing how you resolved disagreements constructively',
+          'Time Management': 'Share how you prioritize tasks and meet deadlines under pressure',
+          'Stress Management': 'Describe your strategies for staying calm and effective under stress',
+          'Feedback Acceptance': 'Show openness — share examples of acting on constructive feedback',
+          // Resume-based Round
+          'Resume Accuracy': 'Ensure everything on your resume is accurate and verifiable',
+          'Resume Knowledge': 'Be prepared to elaborate on every point in your resume',
+          'Project Understanding': 'Deepen your understanding of the projects you have listed',
+          'Project Ownership': 'Be able to clearly describe your specific role and contributions',
+          'Internship Knowledge': 'Recall key tasks, learnings, and outcomes from your internships',
+          'Skill Awareness': 'Only list skills you can comfortably discuss and demonstrate',
+          'Achievement Clarity': 'Quantify your achievements wherever possible',
+          'Technical Exposure': 'Highlight tools and technologies you have actually worked with',
+          'Role Understanding': 'Be clear about your responsibilities in each role listed',
+          'Resume Consistency': 'Ensure your story is consistent across your resume and answers',
+          'Practical Exposure': 'Link your experience to real-world applications and outcomes',
+          'Self Awareness': 'Reflect on your strengths, weaknesses, and growth areas honestly',
+          // English Communication
+          'Fluency': 'Practice speaking English continuously — reduce deliberate pauses',
+          'Clarity': 'Slow down and enunciate each word clearly for the listener',
+          'Grammar': 'Review common grammar rules and practice through writing daily',
+          'Vocabulary': 'Read widely and note new words — use them in daily conversation',
+          'Pronunciation': 'Use pronunciation guides and listen to native speakers regularly',
+          'Articulation': 'Practice tongue twisters and read aloud to improve articulation',
+          'Listening': 'Practice active listening — summarise what you hear before responding',
+          'Comprehension': 'Engage with English audio and video content to sharpen understanding',
+          'Sentence Formation': 'Focus on building complete, grammatically correct sentences',
+          'Communication': 'Practice speaking clearly and concisely — record yourself and review',
+          // Fresher Round
+          'Learning Agility': 'Show how quickly you pick up new concepts — share a recent learning example',
+          'Growth Mindset': 'Embrace challenges as learning opportunities and talk about how you improve',
+          'Curiosity': 'Ask thoughtful questions and share what you actively explore outside class',
+          'Willingness to Learn': 'Express openness to feedback and eagerness to develop new skills',
+          'Initiative': 'Highlight moments you acted without being asked — projects, clubs, or volunteering',
+          'Coachability': 'Demonstrate how you apply feedback quickly and improve without ego',
+          'Work Readiness': 'Align your academic skills to workplace expectations and real tasks',
+          'Team Spirit': 'Prepare stories of contributing positively to a group goal',
+          'Professional Attitude': 'Practice punctuality, respectful communication, and a proactive mindset',
+          'Career Commitment': 'Articulate a clear reason for choosing this field and long-term direction',
+          // Legacy dimensions
+          'Technical Skills': 'Deepen hands-on project experience in the required tech stack',
           'Correctness': 'Double-check facts and be precise — avoid assumptions',
           'Structure': 'Use frameworks like STAR or the Pyramid Principle for answers',
-          'Confidence': 'Mock interview practice — familiarity builds confidence over time',
           'Relevance': 'Stay focused on the question — avoid tangents and over-explaining',
         };
         var items = improvements.slice(0,5).map(function (d) {
@@ -5327,11 +5387,12 @@ description
       var scoreLabelEmpty = document.querySelector('.report-score-label');
       if (scoreLabelEmpty) scoreLabelEmpty.textContent = earlyEnd ? 'Ended Before Scoring' : 'No Data Yet';
 
-      document.querySelectorAll('.report-subscore-row').forEach(function (row) {
-        row.querySelector('.report-subscore-val').textContent = '—';
-        var fill = row.querySelector('.report-subscore-bar-fill');
-        if (fill) fill.style.width = '0%';
-      });
+      var subscoresContainerEmpty = document.querySelector('.report-subscores');
+      if (subscoresContainerEmpty) {
+        subscoresContainerEmpty.innerHTML = currentDims.map(function(dim) {
+          return '<div class="report-subscore-row"><div class="report-subscore-header"><span class="report-subscore-name">' + dim + '</span><span class="report-subscore-val">—</span></div><div class="report-subscore-bar"><div class="report-subscore-bar-fill" style="width:0%"></div></div></div>';
+        }).join('');
+      }
 
       var strongListEmpty = document.querySelector('.report-perf-list.strong');
       var improveListEmpty = document.querySelector('.report-perf-list.improve');
@@ -5349,7 +5410,7 @@ description
       if (overallFeedbackElEmpty) {
         overallFeedbackElEmpty.textContent = earlyEnd
           ? 'The session ended before enough responses were collected to generate feedback. Start a new interview and try to complete more questions for a detailed evaluation.'
-          : 'Your per-question evaluations will appear here after a completed interview. Each question contributes dimension scores across Communication, Problem Solving, Technical Skills, Culture Fit, Correctness, Structure, Confidence, and Relevance.';
+          : 'Your per-question evaluations will appear here after a completed interview. Each question contributes dimension scores across ' + currentDims.join(', ') + '.';
       }
     }
 
@@ -5371,8 +5432,12 @@ description
     ivAskedQuestions = [];
 
     // Show report
-    document.getElementById('report-page').style.display = 'block';
-    window.scrollTo({ top: 0, behavior: 'smooth' });
+    var reportPageEl = document.getElementById('report-page');
+    reportPageEl.style.display = 'block';
+    // Force the report to always open scrolled to the very top,
+    // never wherever the page happened to be scrolled to before.
+    reportPageEl.scrollTop = 0;
+    window.scrollTo(0, 0);
   }
 
   // Waveform for interview page
