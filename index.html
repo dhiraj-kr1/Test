@@ -2322,26 +2322,74 @@
     padding: 0;
     display: flex;
     flex-direction: column;
-    gap: var(--sp-sm);
+    gap: var(--sp-md);
   }
 
   .report-overall-feedback-list li {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+  }
+
+  .report-feedback-ring-wrap {
     position: relative;
+    flex: 0 0 auto;
+    width: 56px;
+    height: 56px;
+  }
+
+  .report-feedback-ring {
+    transform: rotate(-90deg);
+    width: 56px;
+    height: 56px;
+  }
+
+  .report-feedback-ring circle {
+    fill: none;
+    stroke-width: 6;
+    stroke-linecap: round;
+  }
+
+  .report-feedback-ring .ring-track {
+    stroke: var(--surface-variant);
+  }
+
+  .report-feedback-ring .ring-fill {
+    transition: stroke-dashoffset 1s ease;
+  }
+
+  .report-feedback-ring-value {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    line-height: 1;
+  }
+
+  .report-feedback-ring-value .score-num {
+    font-family: 'Space Grotesk', sans-serif;
+    font-size: 15px;
+    font-weight: 700;
+    color: var(--on-surface);
+  }
+
+  .report-feedback-ring-value .score-denom {
+    font-size: 8px;
+    color: var(--on-surface-variant);
+    font-weight: 600;
+  }
+
+  .report-feedback-text {
+    flex: 1 1 auto;
     font-size: 14px;
     line-height: 1.6;
     color: var(--on-surface-variant);
-    padding-left: 18px;
   }
 
-  .report-overall-feedback-list li::before {
-    content: '';
-    position: absolute;
-    left: 0;
-    top: 8px;
-    width: 6px;
-    height: 6px;
-    border-radius: 50%;
-    background: var(--primary, #6750A4);
+  .report-feedback-text strong {
+    color: var(--on-surface);
   }
 
   /* ===================== LANDING PAGE ===================== */
@@ -4795,7 +4843,7 @@ description
   function buildSystemPrompt() {
     var cfg = window.interviewConfig || {};
     var dims = getEvalDimensions();
-    var evalFields = dims.map(function(dim) { return '    "' + dim + '": <0-10>,'; });
+    var dimList = dims.map(function(dim) { return '  - ' + dim; }).join('\n');
     var lines = [
       'You are Karia, a professional AI interviewer conducting a ' + (cfg.interviewType || 'general') + ' interview.',
       'Position: ' + (cfg.position || 'unspecified') + '.',
@@ -4813,13 +4861,23 @@ description
       '  "action": one of ["nextQuestion","followUp","clarify","increaseDifficulty","decreaseDifficulty","hint","stayTopic","changeTopic","finish"],',
       '  "message": "Your spoken response to the candidate (warm, professional, concise)",',
       '  "question": "The next question to ask (omit if action is finish)",',
-      '  "evaluation": {'
-    ].concat(evalFields).concat([
+      '  "evaluation": {',
+      '    "dimensions": { "<DimensionName>": <0-10>, ... },',
       '    "summary": "One sentence feedback"',
       '  }',
       '}',
       '',
-      'SCORING (0-10): 0-2=Incorrect, 3-4=Major gaps, 5-6=Partially correct, 7-8=Mostly correct, 9-10=Excellent.',
+      'FULL DIMENSION LIST for this interview type (' + (cfg.interviewType || 'hr') + '):',
+      dimList,
+      '',
+      'DIMENSION SELECTION RULE — SCORE ONLY WHAT THE QUESTION ACTUALLY TESTS:',
+      'Before scoring, first decide which of the dimensions above the question you JUST asked actually fits.',
+      'A question only tests the dimensions it genuinely gives evidence for. Most questions fit 2-5 dimensions, not all of them.',
+      'Example: a pure coding/debugging question does NOT give evidence for "Company Awareness" or "Culture Fit" — leave those out entirely.',
+      'In the "dimensions" object, INCLUDE ONLY the dimension keys that fit this question. DO NOT include a dimension you cannot justify from the answer.',
+      'NEVER pad the object with every dimension "just in case", and NEVER score a dimension as 0 or low just because it is irrelevant — omit it instead.',
+      '',
+      'SCORING (0-10, for each included dimension only): 0-2=Incorrect, 3-4=Major gaps, 5-6=Partially correct, 7-8=Mostly correct, 9-10=Excellent.',
       '',
       'ACTION DECISION GUIDE:',
       '- nextQuestion: answer was sufficient, move on',
@@ -4845,7 +4903,7 @@ description
       'You MUST NOT ask any question that is the same as, or substantially similar to, any question in the list above.',
       'Before generating a new question, mentally check it against every question already asked.',
       'If you find yourself about to repeat a topic or phrasing, pivot to a completely different area.'
-    ]);
+    ];
     return lines.filter(Boolean).join('\n');
   }
 
@@ -5274,26 +5332,43 @@ description
     }
 
     // ---- Compute scores from ivEvaluations ----
+    // Each question only scores the dimensions the interviewer decided that
+    // question actually tests (eval_.dimensions). We average each dimension
+    // only over the questions that actually scored it, so a dimension a
+    // candidate was never tested on doesn't drag their average down as a 0,
+    // and it's excluded from the report entirely if no question covered it.
     var currentDims = getEvalDimensions();
     var dimTotals = {};
-    currentDims.forEach(function (d) { dimTotals[d] = 0; });
+    var dimCounts = {};
+    currentDims.forEach(function (d) { dimTotals[d] = 0; dimCounts[d] = 0; });
     var evalCount = ivEvaluations.length;
 
     if (evalCount > 0) {
       ivEvaluations.forEach(function (ev) {
         var eval_ = ev.evaluation || {};
+        // Support both the new { dimensions: {...} } shape and, for
+        // backwards compatibility, dimension keys placed directly on eval_.
+        var scored = eval_.dimensions || eval_;
         currentDims.forEach(function (d) {
-          dimTotals[d] += parseFloat(eval_[d] || 0);
+          var raw = scored[d];
+          if (raw === undefined || raw === null || raw === '') return; // not tested by this question — skip
+          var v = parseFloat(raw);
+          if (isNaN(v)) return;
+          dimTotals[d] += v;
+          dimCounts[d] += 1;
         });
       });
 
-      // Averages
+      // Averages — only over dimensions that were actually tested at least once
+      var testedDims = currentDims.filter(function (d) { return dimCounts[d] > 0; });
       var dimAvgs = {};
-      currentDims.forEach(function (d) {
-        dimAvgs[d] = Math.round((dimTotals[d] / evalCount) * 10) / 10;
+      testedDims.forEach(function (d) {
+        dimAvgs[d] = Math.round((dimTotals[d] / dimCounts[d]) * 10) / 10;
       });
 
-      var overallAvg = currentDims.reduce(function (s, d) { return s + dimAvgs[d]; }, 0) / currentDims.length;
+      var overallAvg = testedDims.length
+        ? testedDims.reduce(function (s, d) { return s + dimAvgs[d]; }, 0) / testedDims.length
+        : 0;
       overallAvg = Math.round(overallAvg * 10) / 10;
 
       // Update ring
@@ -5318,16 +5393,17 @@ description
       }
 
       // Update sub-score bars
-      // Rebuild subscore rows dynamically for this round type
+      // Rebuild subscore rows dynamically — only for dimensions that were
+      // actually tested by at least one question this session.
       var subscoresContainer = document.querySelector('.report-subscores');
       if (subscoresContainer) {
-        subscoresContainer.innerHTML = currentDims.map(function(dim) {
+        subscoresContainer.innerHTML = testedDims.map(function(dim) {
           return '<div class="report-subscore-row"><div class="report-subscore-header"><span class="report-subscore-name">' + dim + '</span><span class="report-subscore-val">—</span></div><div class="report-subscore-bar"><div class="report-subscore-bar-fill" style="width:0%"></div></div></div>';
         }).join('');
       }
       var rows = document.querySelectorAll('.report-subscore-row');
       rows.forEach(function (row, i) {
-        var dim = currentDims[i];
+        var dim = testedDims[i];
         if (!dim) return;
         var val = dimAvgs[dim] || 0;
         row.querySelector('.report-subscore-name').textContent = dim;
@@ -5336,9 +5412,9 @@ description
         if (fill) fill.style.width = (val * 10) + '%';
       });
 
-      // Performance summary from evaluations
-      var strengths = currentDims.filter(function (d) { return dimAvgs[d] >= 7; });
-      var improvements = currentDims.filter(function (d) { return dimAvgs[d] < 6; });
+      // Performance summary from evaluations — only among dimensions actually tested
+      var strengths = testedDims.filter(function (d) { return dimAvgs[d] >= 7; });
+      var improvements = testedDims.filter(function (d) { return dimAvgs[d] < 6; });
 
       var strongList = document.querySelector('.report-perf-list.strong');
       var improveList = document.querySelector('.report-perf-list.improve');
@@ -5353,17 +5429,47 @@ description
           : '<li>No major gaps identified.</li>';
       }
 
-      // Summaries from evaluations
+      // Summaries from evaluations, each paired with a per-question score
+      // (average of that question's dimension scores) rated 1-10 for how
+      // well the answer matched the question that was asked.
       var summaries = ivEvaluations.map(function (ev, i) {
-        return 'Q' + (i + 1) + ': ' + (ev.evaluation && ev.evaluation.summary ? ev.evaluation.summary : '');
-      }).filter(function (s) { return s.length > 4; });
+        var eval_ = ev.evaluation || {};
+        var text = eval_.summary || '';
+        // Support both the new { dimensions: {...} } shape and legacy flat keys.
+        var scored = eval_.dimensions || eval_;
+        var dimScores = currentDims
+          .map(function (d) { return parseFloat(scored[d]); })
+          .filter(function (v) { return !isNaN(v); });
+        var qScore = dimScores.length
+          ? Math.round((dimScores.reduce(function (a, b) { return a + b; }, 0) / dimScores.length) * 10) / 10
+          : null;
+        return { num: i + 1, score: qScore, text: text };
+      }).filter(function (s) { return s.text && s.text.length > 4; });
 
       var overallFeedbackEl = document.getElementById('report-overall-feedback-text');
       if (overallFeedbackEl && summaries.length) {
-        // Render as a proper list, one point per question, instead of a
-        // single wall-of-text paragraph joined by bullets.
+        // Render as a list with a circular progress-ring score (1-10) per
+        // question, matching the report's main score-ring style.
+        var RING_R = 26, RING_C = Math.round(2 * Math.PI * RING_R * 100) / 100; // ~163.36
         overallFeedbackEl.innerHTML = summaries.map(function (s) {
-          return '<li>' + s + '</li>';
+          var hasScore = s.score !== null;
+          var pct = hasScore ? (s.score / 10) : 0;
+          var offset = Math.round(RING_C * (1 - pct) * 100) / 100;
+          var scoreColor = !hasScore ? '#8a8a8a'
+            : s.score >= 7 ? '#1b8a4a'
+            : s.score >= 5 ? '#c47a00'
+            : '#ba1a1a';
+          var scoreDisplay = hasScore ? s.score : '—';
+          return '<li>'
+            + '<div class="report-feedback-ring-wrap">'
+            +   '<svg class="report-feedback-ring" viewBox="0 0 64 64">'
+            +     '<circle class="ring-track" cx="32" cy="32" r="' + RING_R + '"/>'
+            +     '<circle class="ring-fill" cx="32" cy="32" r="' + RING_R + '" style="stroke:' + scoreColor + '; stroke-dasharray:' + RING_C + '; stroke-dashoffset:' + offset + ';"/>'
+            +   '</svg>'
+            +   '<div class="report-feedback-ring-value"><span class="score-num">' + scoreDisplay + '</span><span class="score-denom">/ 10</span></div>'
+            + '</div>'
+            + '<span class="report-feedback-text"><strong>Q' + s.num + ':</strong> ' + s.text + '</span>'
+            + '</li>';
         }).join('');
       }
 
