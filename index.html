@@ -1,4 +1,3 @@
-
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -4982,9 +4981,46 @@ description
         var parsed = JSON.parse(match[0]);
         callback(parsed, null);
       } catch(e) {
-        callback({ message: clean, action: 'nextQuestion' }, null);
+        // The model occasionally emits near-valid JSON (unquoted or
+        // dash-prefixed keys, trailing commas). Try to repair it before
+        // giving up, so a raw JSON blob never gets shown to the user.
+        try {
+          var repaired = sanitizeJsonLike(match[0]);
+          var parsedRepaired = JSON.parse(repaired);
+          callback(parsedRepaired, null);
+        } catch (e2) {
+          // Still broken — pull out just the fields we need via regex
+          // rather than dumping the whole (invalid) JSON as chat text.
+          var msg = extractJsonStringField(match[0], 'message')
+                 || extractJsonStringField(match[0], 'question')
+                 || 'Thanks for sharing that — let\'s continue.';
+          var action = extractJsonStringField(match[0], 'action') || 'nextQuestion';
+          var question = extractJsonStringField(match[0], 'question');
+          var fallback = { message: msg, action: action };
+          if (question) fallback.question = question;
+          callback(fallback, null);
+        }
       }
     });
+  }
+
+  // Repairs common near-valid-JSON slips from the model: unquoted or
+  // dash-prefixed object keys, and trailing commas before } or ].
+  function sanitizeJsonLike(str) {
+    var repaired = str;
+    repaired = repaired.replace(/([{,]\s*)[-*]?\s*"?([A-Za-z][A-Za-z0-9 _]*)"?\s*:/g, function (m, pre, key) {
+      return pre + '"' + key.trim() + '":';
+    });
+    repaired = repaired.replace(/,(\s*[}\]])/g, '$1');
+    return repaired;
+  }
+
+  // Last-resort extraction of a single quoted string field from
+  // otherwise-unparseable JSON-like text.
+  function extractJsonStringField(str, field) {
+    var re = new RegExp('"' + field + '"\\s*:\\s*"((?:[^"\\\\]|\\\\.)*)"');
+    var m = str.match(re);
+    return m ? m[1].replace(/\\"/g, '"').replace(/\\n/g, '\n') : null;
   }
 
   // ---- Intro sequence then questions ----
