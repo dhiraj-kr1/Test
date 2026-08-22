@@ -4451,6 +4451,8 @@ description
   var SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
   var recognition = null;
   var isListening = false;
+  var recognitionRunning = false;   // true only while the browser engine is actually active
+  var recognitionRestartTimer = null;
   var currentTranscript = '';
   var speechSilenceTimer = null;
   var onAnswerReady = null; // callback(transcript)
@@ -4463,6 +4465,10 @@ description
     recognition.interimResults = true;
     recognition.lang = 'en-US';
     recognition.maxAlternatives = 1;
+
+    recognition.onstart = function () {
+      recognitionRunning = true;
+    };
 
     recognition.onresult = function (event) {
       var interim = '';
@@ -4489,13 +4495,36 @@ description
 
     recognition.onerror = function (e) {
       if (e.error === 'no-speech' || e.error === 'aborted') return;
+      if (e.error === 'not-allowed' || e.error === 'audio-capture' || e.error === 'service-not-allowed') {
+        // Mic access was revoked/blocked mid-interview — surface it instead of
+        // silently leaving the candidate talking to a mic that isn't listening.
+        console.warn('Speech error:', e.error);
+        var hint = document.getElementById('iv-chat-hint-text');
+        if (hint) hint.textContent = 'Microphone access lost — please check permissions and try again.';
+        return;
+      }
       console.warn('Speech error:', e.error);
+      // Any other error (e.g. 'network') will be followed by an onend event,
+      // which is responsible for restarting recognition below.
     };
 
     recognition.onend = function () {
-      // Auto-restart while listening is active (Chrome stops after ~60 s)
+      recognitionRunning = false;
+      // Auto-restart while listening is active (Chrome silently stops the
+      // engine after ~60s, and can also stop after transient errors). Calling
+      // recognition.start() synchronously from here can throw "already
+      // started"/InvalidStateError because the previous session hasn't fully
+      // torn down yet, which would leave isListening=true while nothing is
+      // actually listening — that's what caused answers to go unrecognized
+      // mid-interview. A short delay plus the recognitionRunning guard makes
+      // the restart reliable.
+      clearTimeout(recognitionRestartTimer);
       if (isListening) {
-        try { recognition.start(); } catch(e) {}
+        recognitionRestartTimer = setTimeout(function () {
+          if (isListening && !recognitionRunning) {
+            try { recognition.start(); } catch (e) { /* retry on next onend */ }
+          }
+        }, 250);
       }
     };
   }
@@ -4527,14 +4556,19 @@ description
     onAnswerReady = callback;
     isListening = true;
     setMicListening('listening');
-    if (recognition) {
-      try { recognition.start(); } catch(e) {}
+    clearTimeout(recognitionRestartTimer);
+    if (recognition && !recognitionRunning) {
+      try { recognition.start(); } catch (e) {
+        // Engine hadn't finished stopping yet — onend's restart logic will
+        // pick it up a moment later since isListening is already true.
+      }
     }
   }
 
   function stopListening() {
     isListening = false;
     clearTimeout(speechSilenceTimer);
+    clearTimeout(recognitionRestartTimer);
     if (recognition) { try { recognition.stop(); } catch(e) {} }
     setMicListening('processing');
   }
@@ -4598,7 +4632,7 @@ description
 
   // ---- Gemini TTS ----
   // Converts base64 Linear16 PCM (24 kHz mono) from Gemini into playable audio.
-  function playPCMBase64(b64, sampleRate, onEnd) {
+  function playPCMBase64(b64, sampleRate, onStart, onEnd) {
     try {
       if (!ttsAudioCtx || ttsAudioCtx.state === 'closed') {
         ttsAudioCtx = new (window.AudioContext || window.webkitAudioContext)();
@@ -4625,9 +4659,14 @@ description
         src.connect(ttsAudioCtx.destination);
         ttsCurrentSource = src;
         src.onended = function () { ttsCurrentSource = null; if (onEnd) onEnd(); };
+        // Fire onStart right as playback actually begins, so the caption
+        // bubble appears in the same instant as the voice — not earlier
+        // (while we were still waiting on the network) and not later.
+        if (onStart) onStart();
         src.start();
       });
     } catch(e) {
+      if (onStart) onStart();
       if (onEnd) onEnd();
     }
   }
@@ -4639,10 +4678,10 @@ description
     }
   }
 
-  function speakWithGemini(text, onEnd) {
+  function speakWithGemini(text, onStart, onEnd) {
     var cfg = window.interviewConfig || {};
     var key = cfg.geminiApiKey;
-    if (!key) { speakWithBrowser(text, onEnd); return; }
+    if (!key) { speakWithBrowser(text, onStart, onEnd); return; }
 
     var payload = {
       model: 'gemini-2.5-flash-preview-tts',
@@ -4672,21 +4711,21 @@ description
                  data.candidates[0].content.parts[0];
       if (part && part.inlineData && part.inlineData.data) {
         // Gemini TTS returns Linear16 PCM at 24000 Hz
-        playPCMBase64(part.inlineData.data, 24000, function () {
+        playPCMBase64(part.inlineData.data, 24000, onStart, function () {
           if (ivInterviewActive && onEnd) onEnd();
         });
       } else {
         // API responded but no audio — fall back to browser
-        speakWithBrowser(text, onEnd);
+        speakWithBrowser(text, onStart, onEnd);
       }
     })
     .catch(function () {
-      if (ivInterviewActive) speakWithBrowser(text, onEnd);
+      if (ivInterviewActive) speakWithBrowser(text, onStart, onEnd);
     });
   }
 
-  function speakWithBrowser(text, onEnd) {
-    if (!window.speechSynthesis) { if (onEnd) onEnd(); return; }
+  function speakWithBrowser(text, onStart, onEnd) {
+    if (!window.speechSynthesis) { if (onStart) onStart(); if (onEnd) onEnd(); return; }
     stopGeminiTTS(); if (window.speechSynthesis) window.speechSynthesis.cancel();
     var utt   = new SpeechSynthesisUtterance(text);
     if (ttsFallbackVoice && ttsFallbackVoiceReady) {
@@ -4697,19 +4736,25 @@ description
     }
     utt.rate   = 0.97;
     utt.volume = 1.0;
-    utt.onend  = function () { if (ivInterviewActive && onEnd) onEnd(); };
-    utt.onerror = function () { if (ivInterviewActive && onEnd) onEnd(); };
+    var started = false;
+    utt.onstart = function () { started = true; if (onStart) onStart(); };
+    utt.onend  = function () { if (!started && onStart) onStart(); if (ivInterviewActive && onEnd) onEnd(); };
+    utt.onerror = function () { if (!started && onStart) onStart(); if (ivInterviewActive && onEnd) onEnd(); };
     window.speechSynthesis.speak(utt);
   }
 
   // ---- Public speak() — used everywhere in the interview flow ----
-  function speak(text, onEnd) {
-    if (!ttsEnabled) { if (onEnd) onEnd(); return; }
+  // onStart fires the instant audio playback actually begins (after the TTS
+  // network round-trip), so callers should show the caption bubble there
+  // instead of before calling speak() — that's what keeps voice and text
+  // in sync instead of the caption appearing a beat before the voice.
+  function speak(text, onStart, onEnd) {
+    if (!ttsEnabled) { if (onStart) onStart(); if (onEnd) onEnd(); return; }
     // Stop any currently playing audio
     stopGeminiTTS();
     if (window.speechSynthesis) window.speechSynthesis.cancel();
     setMicListening('speaking');
-    speakWithGemini(text, onEnd);
+    speakWithGemini(text, onStart, onEnd);
   }
 
   // ===================== INTERVIEW CONTROLLER =====================
@@ -4881,8 +4926,7 @@ description
     var introFn = INTRO_BY_TYPE[interviewType] || INTRO_BY_TYPE['hr'];
     var introText = introFn(name, position);
 
-    addAiMessage(introText);
-    speak(introText, function () {
+    speak(introText, function () { addAiMessage(introText); }, function () {
       startListening(function (answer) {
         ivConversationHistory.push({ role: 'ai', content: introText });
         ivConversationHistory.push({ role: 'candidate', content: answer });
@@ -4894,8 +4938,7 @@ description
               // Fallback: use sample questions
               var fallbackMsg = 'Let\'s dive in! ' + sampleQuestions[0];
               ivAskedQuestions.push(sampleQuestions[0]);
-              addAiMessage(fallbackMsg);
-              speak(fallbackMsg, function () {
+              speak(fallbackMsg, function () { addAiMessage(fallbackMsg); }, function () {
                 ivConversationHistory.push({ role: 'ai', content: fallbackMsg });
                 startListening(function (ans) { handleAnswer(ans, 1); });
               });
@@ -4903,10 +4946,9 @@ description
             }
             var aiText = (resp.message || '') + (resp.question ? ' ' + resp.question : '');
             if (resp.question) ivAskedQuestions.push(resp.question);
-            addAiMessage(aiText);
             ivConversationHistory.push({ role: 'ai', content: aiText });
             ivQCurrent.textContent = 1;
-            speak(aiText, function () {
+            speak(aiText, function () { addAiMessage(aiText); }, function () {
               startListening(function (ans) { handleAnswer(ans, 1); });
             });
           });
@@ -4926,8 +4968,7 @@ description
           var nextNum = questionNum + 1;
           if (nextNum <= ivTotalQuestions) {
             var fb = 'Good answer! Let me ask you the next question.';
-            addAiMessage(fb);
-            speak(fb, function () {
+            speak(fb, function () { addAiMessage(fb); }, function () {
               ivCurrentQuestion = nextNum;
               ivQCurrent.textContent = nextNum;
               askFallbackQuestion(nextNum);
@@ -4950,11 +4991,10 @@ description
         // Track every question asked so the AI never repeats one
         if (resp.question) ivAskedQuestions.push(resp.question);
 
-        addAiMessage(aiText);
         ivConversationHistory.push({ role: 'ai', content: aiText });
 
         if (action === 'finish') {
-          speak(aiText, function () {
+          speak(aiText, function () { addAiMessage(aiText); }, function () {
             setTimeout(function () { endInterviewFlow(); }, 1200);
           });
           return;
@@ -4967,12 +5007,12 @@ description
           ivCurrentQuestion = nextNum;
           ivQCurrent.textContent = nextNum;
           if (nextNum > ivTotalQuestions) {
-            speak(aiText, function () { setTimeout(endInterviewFlow, 1000); });
+            speak(aiText, function () { addAiMessage(aiText); }, function () { setTimeout(endInterviewFlow, 1000); });
             return;
           }
         }
 
-        speak(aiText, function () {
+        speak(aiText, function () { addAiMessage(aiText); }, function () {
           startListening(function (ans) { handleAnswer(ans, nextNum); });
         });
       });
@@ -4983,10 +5023,9 @@ description
     var q = sampleQuestions[num - 1] || 'That wraps up our interview. Thank you so much!';
     showTyping(function () {
       var text = 'Question ' + num + ' of ' + ivTotalQuestions + ': ' + q;
-      addAiMessage(text);
       ivConversationHistory.push({ role: 'ai', content: text });
       ivQCurrent.textContent = num;
-      speak(text, function () {
+      speak(text, function () { addAiMessage(text); }, function () {
         startListening(function (ans) { handleAnswer(ans, num); });
       });
     });
@@ -5066,8 +5105,7 @@ description
 
     var closingText = 'It was really nice talking with you today. Thank you so much for your time — you did great!';
     showTyping(function () {
-      addAiMessage(closingText);
-      speak(closingText, function () {
+      speak(closingText, function () { addAiMessage(closingText); }, function () {
         setTimeout(function () { showReport(false); }, 1500);
       });
     });
@@ -5102,6 +5140,8 @@ description
     stopIvWaveform();
     stopGeminiTTS(); if (window.speechSynthesis) window.speechSynthesis.cancel();
     if (recognition) { try { recognition.abort(); } catch (e) {} recognition = null; }
+    recognitionRunning = false;
+    clearTimeout(recognitionRestartTimer);
     clearTimeout(speechSilenceTimer);
 
     var config = window.interviewConfig || {};
