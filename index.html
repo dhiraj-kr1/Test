@@ -5192,8 +5192,13 @@ description
 
   // ---- Post-interview: "Do you have any questions for me?" ----
   var ivDoubtsRound = 0;
-  var IV_MAX_DOUBT_ROUNDS = 3; // safety cap so this can't loop forever
+  var IV_MAX_DOUBT_ROUNDS = 2; // safety cap so this can't loop forever
   var IV_NO_DOUBT_RE = /^(no+p?e?|nah|nothing|no[\s,]*thanks?|no[\s,]*thank[\s,]*you|not[\s,]*really|i'?m[\s,]*good|im[\s,]*good|all[\s,]*good|none|no[\s,]*questions?|no[\s,]*more[\s,]*questions?|no[\s,]*other[\s,]*questions?|any[\s,]*more[\s,]*questions?|any[\s,]*other[\s,]*questions?|that'?s[\s,]*all|thats[\s,]*all|i[\s,]*don'?t[\s,]*have[\s,]*any([\s,]*questions?)?|i[\s,]*dont[\s,]*have[\s,]*any([\s,]*questions?)?|not[\s,]*at[\s,]*this[\s,]*time|not[\s,]*at[\s,]*the[\s,]*moment|no[\s,]*further[\s,]*questions?)[\s.!,]*$/i;
+  // Candidate signals they DO have a question but hasn't stated it yet
+  // (e.g. "one more question", "yes", "sure") — invite them to continue
+  // instead of treating the phrase itself as the question.
+  var IV_YES_INTENT_RE = /^(yes|yeah|yep|yup|sure|ok(ay)?|actually[\s,]*yes|i\s*do|i\s*have\s*(one|a|another)?(\s*more)?(\s*question)?|one\s*(more\s*)?question|(just\s*)?(one|a)\s*(more\s*)?question|i\s*have\s*(one|a)\s*(more\s*)?question)[\s.!,]*$/i;
+  var IV_NO_RESPONSE_TEXT = '(No response detected)';
 
   function askCandidateDoubts() {
     ivDoubtsRound = 0;
@@ -5224,7 +5229,8 @@ description
     setMicListening(false);
 
     var trimmed = (answer || '').trim();
-    var isNoDoubt = !trimmed || IV_NO_DOUBT_RE.test(trimmed);
+    var isNoResponse = !trimmed || trimmed === IV_NO_RESPONSE_TEXT;
+    var isNoDoubt = isNoResponse || IV_NO_DOUBT_RE.test(trimmed);
 
     if (isNoDoubt || ivDoubtsRound >= IV_MAX_DOUBT_ROUNDS) {
       var closing = 'Perfect, thank you so much for your time today! That wraps up our interview.';
@@ -5232,6 +5238,20 @@ description
       speak(closing, function () { hideTypingBubble(); addAiMessage(closing); }, function () {
         ivConversationHistory.push({ role: 'ai', content: closing });
         setTimeout(function () { endInterviewFlow(); }, 1000);
+      });
+      return;
+    }
+
+    // Candidate said they DO have a question but hasn't asked it yet —
+    // invite them to go ahead and listen again. Don't send this to the
+    // model as if it were the real question, and don't re-ask "any other
+    // questions?" afterward (they already answered that).
+    if (IV_YES_INTENT_RE.test(trimmed)) {
+      var invite = 'Of course, please go ahead and ask your question!';
+      showTypingBubble();
+      speak(invite, function () { hideTypingBubble(); addAiMessage(invite); }, function () {
+        ivConversationHistory.push({ role: 'ai', content: invite });
+        startListening(function (ans) { handleCandidateDoubt(ans); });
       });
       return;
     }
