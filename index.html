@@ -1676,8 +1676,7 @@
   }
 
   .iv-mic-indicator .material-symbols-outlined {
-    font-size: 18px;
-    animation: pulse 1.4s ease-in-out infinite;
+  }
   }
 
   .iv-chat-hint {
@@ -3043,15 +3042,15 @@ work_history
       <div class="iv-chat-footer">
         <div style="display:flex;align-items:center;gap:8px;">
           <div class="iv-mic-indicator" id="iv-mic-indicator" style="flex:1;">
-            <span class="material-symbols-outlined">mic</span>
-            <span id="iv-mic-label">Listening…</span>
+
+            <span id="iv-mic-label">AI Speaking…</span>
           </div>
           <button class="iv-tts-btn" id="iv-tts-toggle" title="Toggle AI voice">
             <span class="material-symbols-outlined">volume_up</span>
             <span id="iv-tts-label">Voice On</span>
           </button>
         </div>
-        <div class="iv-chat-hint" id="iv-chat-hint-text">Speak your answer — the AI is listening</div>
+        <div class="iv-chat-hint" id="iv-chat-hint-text">Please wait while Karia is speaking…</div>
         <div class="iv-no-stt" id="iv-no-stt-notice" style="display:none;">
           ⚠ Speech recognition not available in this browser. Use Chrome or Edge for voice input.
         </div>
@@ -4441,6 +4440,9 @@ description
     document.querySelector('main').style.display   = 'none';
     interviewPage.style.display = 'flex';
 
+    // Immediately show "AI Speaking" — mic is not active yet during the intro TTS
+    setMicListening('speaking');
+
     // Start the intro sequence
     setTimeout(function () { runIntroSequence(name, config.position || 'this role'); }, 600);
   }
@@ -4452,6 +4454,7 @@ description
   var currentTranscript = '';
   var speechSilenceTimer = null;
   var onAnswerReady = null; // callback(transcript)
+  var ivInterviewActive = false; // set true when interview starts, false on any exit
 
   function initSpeechRecognition() {
     if (!SpeechRecognition) return;
@@ -4518,6 +4521,8 @@ description
   }
 
   function startListening(callback) {
+    // Don't restart listening if the interview has already ended (e.g. ESC pressed).
+    if (!ivInterviewActive) return;
     currentTranscript = '';
     onAnswerReady = callback;
     isListening = true;
@@ -4609,6 +4614,7 @@ description
   function speak(text, onEnd) {
     if (!ttsEnabled || !window.speechSynthesis) { if (onEnd) onEnd(); return; }
     window.speechSynthesis.cancel();
+    setMicListening('speaking');
     var utt = new SpeechSynthesisUtterance(text);
     if (ttsVoice && ttsVoiceConfirmedFemale) {
       // Only ever use a voice we're confident is female, exactly as selected.
@@ -4622,8 +4628,11 @@ description
     }
     utt.rate  = 0.97;
     utt.volume= 1.0;
-    utt.onend = function () { if (onEnd) onEnd(); };
-    utt.onerror = function () { if (onEnd) onEnd(); };
+    // Guard: don't fire the onEnd callback if the interview was already stopped.
+    // speechSynthesis.cancel() triggers onend/onerror on the current utterance,
+    // which would restart the listening loop even after ESC / End Interview.
+    utt.onend = function () { if (ivInterviewActive && onEnd) onEnd(); };
+    utt.onerror = function () { if (ivInterviewActive && onEnd) onEnd(); };
     window.speechSynthesis.speak(utt);
   }
 
@@ -4787,6 +4796,7 @@ description
   };
 
   function runIntroSequence(name, position) {
+    ivInterviewActive = true;
     initSpeechRecognition();
     initTTS();
 
@@ -4946,14 +4956,31 @@ description
     }, 1400);
   }
 
-  function setMicListening(on) {
-    ivMicLabel.textContent = on ? 'Listening…' : 'Processing…';
-    document.getElementById('iv-mic-indicator').style.background =
-      on ? 'rgba(27,138,74,0.08)' : 'rgba(58,95,196,0.08)';
-    document.getElementById('iv-mic-indicator').style.borderColor =
-      on ? 'rgba(27,138,74,0.25)' : 'rgba(58,95,196,0.25)';
-    document.getElementById('iv-mic-indicator').style.color =
-      on ? '#1b8a4a' : 'var(--primary)';
+  // state: 'speaking' = AI TTS active | 'listening' = user's turn | 'processing' = evaluating
+  function setMicListening(state) {
+    if (state === true)  state = 'listening';
+    if (state === false) state = 'processing';
+    var indicator = document.getElementById('iv-mic-indicator');
+    var hint      = document.getElementById('iv-chat-hint-text');
+    if (state === 'listening') {
+      ivMicLabel.textContent      = 'Listening...';
+      indicator.style.background  = 'rgba(27,138,74,0.08)';
+      indicator.style.borderColor = 'rgba(27,138,74,0.25)';
+      indicator.style.color       = '#1b8a4a';
+      if (hint) hint.textContent  = 'Speak your answer — the AI is listening';
+    } else if (state === 'speaking') {
+      ivMicLabel.textContent      = 'AI Speaking...';
+      indicator.style.background  = 'rgba(58,95,196,0.08)';
+      indicator.style.borderColor = 'rgba(58,95,196,0.25)';
+      indicator.style.color       = 'var(--primary)';
+      if (hint) hint.textContent  = 'Please wait while Karia is speaking...';
+    } else {
+      ivMicLabel.textContent      = 'Processing...';
+      indicator.style.background  = 'rgba(58,95,196,0.08)';
+      indicator.style.borderColor = 'rgba(58,95,196,0.25)';
+      indicator.style.color       = 'var(--primary)';
+      if (hint) hint.textContent  = 'Processing your answer...';
+    }
   }
 
   function endInterviewFlow() {
@@ -4978,6 +5005,10 @@ description
   var ivStartTime = null;
 
   function showReport(earlyEnd) {
+    // Kill the interview immediately — this prevents any pending speak() onEnd
+    // callbacks or startListening() calls from firing after ESC / End Interview.
+    ivInterviewActive = false;
+
     // Leave full-screen mode, if we're in it
     exitInterviewFullscreen();
 
