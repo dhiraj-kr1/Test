@@ -4828,6 +4828,21 @@ description
     ]
   };
 
+  // 5-tier score color scale, used for the overall score ring and every
+  // per-question feedback ring:
+  //   9–10   Dark Green   #0f6b30
+  //   7–8.9  Green        #1b8a4a
+  //   5–6.9  Yellow       #d6a300
+  //   3–4.9  Amber        #c47a00
+  //   0–2.9  Red          #ba1a1a
+  function getScoreColor(score) {
+    if (score >= 9) return '#0f6b30';
+    if (score >= 7) return '#1b8a4a';
+    if (score >= 5) return '#d6a300';
+    if (score >= 3) return '#c47a00';
+    return '#ba1a1a';
+  }
+
   function getEvalDimensions() {
     var cfg = window.interviewConfig || {};
     var type = cfg.interviewType || 'hr';
@@ -5376,8 +5391,8 @@ description
       if (ringFill) {
         var pct = overallAvg / 10;
         ringFill.style.strokeDashoffset = Math.round(314 * (1 - pct));
-        // Color: red < 5, amber 5-7, green > 7
-        ringFill.style.stroke = overallAvg >= 7 ? '#1b8a4a' : overallAvg >= 5 ? '#c47a00' : '#ba1a1a';
+        // Color band: dark green 9-10, green 7-8.9, yellow 5-6.9, amber 3-4.9, red 0-2.9
+        ringFill.style.stroke = getScoreColor(overallAvg);
       }
       document.querySelector('.score-num').textContent = overallAvg;
 
@@ -5390,6 +5405,7 @@ description
         else if (overallAvg >= 5) scoreLabelText = 'Satisfactory Performance';
         else scoreLabelText = 'Needs Improvement';
         scoreLabel.textContent = earlyEnd ? scoreLabelText + ' (Partial)' : scoreLabelText;
+        scoreLabel.style.color = getScoreColor(overallAvg);
       }
 
       // Update sub-score bars
@@ -5406,10 +5422,16 @@ description
         var dim = testedDims[i];
         if (!dim) return;
         var val = dimAvgs[dim] || 0;
+        var color = getScoreColor(val);
         row.querySelector('.report-subscore-name').textContent = dim;
-        row.querySelector('.report-subscore-val').textContent  = val;
+        var valEl = row.querySelector('.report-subscore-val');
+        valEl.textContent = val;
+        valEl.style.color = color;
         var fill = row.querySelector('.report-subscore-bar-fill');
-        if (fill) fill.style.width = (val * 10) + '%';
+        if (fill) {
+          fill.style.width = (val * 10) + '%';
+          fill.style.background = color;
+        }
       });
 
       // Performance summary from evaluations — only among dimensions actually tested
@@ -5455,10 +5477,7 @@ description
           var hasScore = s.score !== null;
           var pct = hasScore ? (s.score / 10) : 0;
           var offset = Math.round(RING_C * (1 - pct) * 100) / 100;
-          var scoreColor = !hasScore ? '#8a8a8a'
-            : s.score >= 7 ? '#1b8a4a'
-            : s.score >= 5 ? '#c47a00'
-            : '#ba1a1a';
+          var scoreColor = !hasScore ? '#8a8a8a' : getScoreColor(s.score);
           var scoreDisplay = hasScore ? s.score : '—';
           return '<li>'
             + '<div class="report-feedback-ring-wrap">'
@@ -5466,7 +5485,7 @@ description
             +     '<circle class="ring-track" cx="32" cy="32" r="' + RING_R + '"/>'
             +     '<circle class="ring-fill" cx="32" cy="32" r="' + RING_R + '" style="stroke:' + scoreColor + '; stroke-dasharray:' + RING_C + '; stroke-dashoffset:' + offset + ';"/>'
             +   '</svg>'
-            +   '<div class="report-feedback-ring-value"><span class="score-num">' + scoreDisplay + '</span><span class="score-denom">/ 10</span></div>'
+            +   '<div class="report-feedback-ring-value"><span class="score-num">' + scoreDisplay + '</span></div>'
             + '</div>'
             + '<span class="report-feedback-text"><strong>Q' + s.num + ':</strong> ' + s.text + '</span>'
             + '</li>';
@@ -5588,7 +5607,10 @@ description
       var scoreNumEmpty = document.querySelector('.score-num');
       if (scoreNumEmpty) scoreNumEmpty.textContent = '—';
       var scoreLabelEmpty = document.querySelector('.report-score-label');
-      if (scoreLabelEmpty) scoreLabelEmpty.textContent = earlyEnd ? 'Ended Before Scoring' : 'No Data Yet';
+      if (scoreLabelEmpty) {
+        scoreLabelEmpty.textContent = earlyEnd ? 'Ended Before Scoring' : 'No Data Yet';
+        scoreLabelEmpty.style.color = 'var(--on-surface)';
+      }
 
       var subscoresContainerEmpty = document.querySelector('.report-subscores');
       if (subscoresContainerEmpty) {
