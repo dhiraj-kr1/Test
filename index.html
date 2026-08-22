@@ -2316,6 +2316,34 @@
     margin: 0;
   }
 
+  .report-overall-feedback-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: var(--sp-sm);
+  }
+
+  .report-overall-feedback-list li {
+    position: relative;
+    font-size: 14px;
+    line-height: 1.6;
+    color: var(--on-surface-variant);
+    padding-left: 18px;
+  }
+
+  .report-overall-feedback-list li::before {
+    content: '';
+    position: absolute;
+    left: 0;
+    top: 8px;
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--primary, #6750A4);
+  }
+
   /* ===================== LANDING PAGE ===================== */
   #landing-page {
     display: flex;
@@ -3239,7 +3267,7 @@ description
 
         <div class="report-overall-feedback">
           <div class="report-overall-feedback-title">Overall Feedback</div>
-          <p id="report-overall-feedback-text">Your per-question evaluations will appear here after a completed interview.</p>
+          <ul id="report-overall-feedback-text" class="report-overall-feedback-list"><li>Your per-question evaluations will appear here after a completed interview.</li></ul>
         </div>
 
       </div>
@@ -4956,7 +4984,7 @@ description
           });
         } else {
           hideTypingBubble();
-          endInterviewFlow();
+          askCandidateDoubts();
         }
         return;
       }
@@ -4977,7 +5005,7 @@ description
 
       if (action === 'finish') {
         speak(aiText, function () { hideTypingBubble(); addAiMessage(aiText); }, function () {
-          setTimeout(function () { endInterviewFlow(); }, 1200);
+          setTimeout(function () { askCandidateDoubts(); }, 1200);
         });
         return;
       }
@@ -4989,13 +5017,78 @@ description
         ivCurrentQuestion = nextNum;
         ivQCurrent.textContent = nextNum;
         if (nextNum > ivTotalQuestions) {
-          speak(aiText, function () { hideTypingBubble(); addAiMessage(aiText); }, function () { setTimeout(endInterviewFlow, 1000); });
+          speak(aiText, function () { hideTypingBubble(); addAiMessage(aiText); }, function () { setTimeout(askCandidateDoubts, 1000); });
           return;
         }
       }
 
       speak(aiText, function () { hideTypingBubble(); addAiMessage(aiText); }, function () {
         startListening(function (ans) { handleAnswer(ans, nextNum); });
+      });
+    });
+  }
+
+  // ---- Post-interview: "Do you have any questions for me?" ----
+  var ivDoubtsRound = 0;
+  var IV_MAX_DOUBT_ROUNDS = 3; // safety cap so this can't loop forever
+  var IV_NO_DOUBT_RE = /^(no|nope|nah|nothing|no thanks|no thank you|not really|i'?m good|im good|all good|none|no questions|that'?s all|thats all|i don'?t have any|i dont have any)\.?!?\s*$/i;
+
+  function askCandidateDoubts() {
+    ivDoubtsRound = 0;
+    var promptText = 'Before we wrap up, do you have any questions for me?';
+    showTypingBubble();
+    speak(promptText, function () { hideTypingBubble(); addAiMessage(promptText); }, function () {
+      ivConversationHistory.push({ role: 'ai', content: promptText });
+      startListening(function (ans) { handleCandidateDoubt(ans); });
+    });
+  }
+
+  function buildDoubtAnswerPrompt(question) {
+    var cfg = window.interviewConfig || {};
+    return [
+      'The interview questions are now complete. The candidate has a question for you (Karia, the interviewer) about the role, company, team, process, or next steps.',
+      'Position: ' + (cfg.position || 'unspecified') + '.',
+      cfg.jobDescription ? 'Job description: ' + cfg.jobDescription : '',
+      'Answer their question naturally, warmly, and concisely (2-4 sentences), the way a real interviewer would.',
+      'If you don\'t have enough information to answer specifics (like exact salary or start date), give a reasonable, honest general answer and suggest the hiring team can confirm details.',
+      'Respond with JSON only: { "message": "your spoken answer here" }',
+      '',
+      'Candidate\'s question: "' + question + '"'
+    ].filter(Boolean).join('\n');
+  }
+
+  function handleCandidateDoubt(answer) {
+    ivConversationHistory.push({ role: 'candidate', content: answer });
+    setMicListening(false);
+
+    var trimmed = (answer || '').trim();
+    var isNoDoubt = !trimmed || IV_NO_DOUBT_RE.test(trimmed);
+
+    if (isNoDoubt || ivDoubtsRound >= IV_MAX_DOUBT_ROUNDS) {
+      var closing = 'Perfect, thank you so much for your time today! That wraps up our interview.';
+      showTypingBubble();
+      speak(closing, function () { hideTypingBubble(); addAiMessage(closing); }, function () {
+        ivConversationHistory.push({ role: 'ai', content: closing });
+        setTimeout(function () { endInterviewFlow(); }, 1000);
+      });
+      return;
+    }
+
+    ivDoubtsRound++;
+    showTypingBubble();
+    callGeminiForController(buildDoubtAnswerPrompt(answer), function (resp) {
+      var replyText = (resp && resp.message)
+        ? resp.message
+        : 'That\'s a great question. I\'d recommend confirming the exact details with the hiring team, but based on our conversation today it sounds like a strong fit for what they\'re looking for.';
+
+      ivConversationHistory.push({ role: 'ai', content: replyText });
+      speak(replyText, function () { hideTypingBubble(); addAiMessage(replyText); }, function () {
+        var followUp = 'Do you have any other questions?';
+        showTypingBubble();
+        speak(followUp, function () { hideTypingBubble(); addAiMessage(followUp); }, function () {
+          ivConversationHistory.push({ role: 'ai', content: followUp });
+          startListening(function (ans) { handleCandidateDoubt(ans); });
+        });
       });
     });
   }
@@ -5267,7 +5360,11 @@ description
 
       var overallFeedbackEl = document.getElementById('report-overall-feedback-text');
       if (overallFeedbackEl && summaries.length) {
-        overallFeedbackEl.textContent = summaries.join('  •  ');
+        // Render as a proper list, one point per question, instead of a
+        // single wall-of-text paragraph joined by bullets.
+        overallFeedbackEl.innerHTML = summaries.map(function (s) {
+          return '<li>' + s + '</li>';
+        }).join('');
       }
 
       // Performance summary headline
@@ -5408,9 +5505,10 @@ description
 
       var overallFeedbackElEmpty = document.getElementById('report-overall-feedback-text');
       if (overallFeedbackElEmpty) {
-        overallFeedbackElEmpty.textContent = earlyEnd
+        var emptyFeedbackText = earlyEnd
           ? 'The session ended before enough responses were collected to generate feedback. Start a new interview and try to complete more questions for a detailed evaluation.'
           : 'Your per-question evaluations will appear here after a completed interview. Each question contributes dimension scores across ' + currentDims.join(', ') + '.';
+        overallFeedbackElEmpty.innerHTML = '<li>' + emptyFeedbackText + '</li>';
       }
     }
 
