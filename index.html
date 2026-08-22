@@ -4931,26 +4931,25 @@ description
         ivConversationHistory.push({ role: 'ai', content: introText });
         ivConversationHistory.push({ role: 'candidate', content: answer });
 
-        showTyping(function () {
-          // Acknowledge + ask first question
-          callGeminiForController(buildFirstQuestionPrompt(), function (resp) {
-            if (!resp) {
-              // Fallback: use sample questions
-              var fallbackMsg = 'Let\'s dive in! ' + sampleQuestions[0];
-              ivAskedQuestions.push(sampleQuestions[0]);
-              speak(fallbackMsg, function () { addAiMessage(fallbackMsg); }, function () {
-                ivConversationHistory.push({ role: 'ai', content: fallbackMsg });
-                startListening(function (ans) { handleAnswer(ans, 1); });
-              });
-              return;
-            }
-            var aiText = (resp.message || '') + (resp.question ? ' ' + resp.question : '');
-            if (resp.question) ivAskedQuestions.push(resp.question);
-            ivConversationHistory.push({ role: 'ai', content: aiText });
-            ivQCurrent.textContent = 1;
-            speak(aiText, function () { addAiMessage(aiText); }, function () {
+        showTypingBubble();
+        // Acknowledge + ask first question
+        callGeminiForController(buildFirstQuestionPrompt(), function (resp) {
+          if (!resp) {
+            // Fallback: use sample questions
+            var fallbackMsg = 'Let\'s dive in! ' + sampleQuestions[0];
+            ivAskedQuestions.push(sampleQuestions[0]);
+            speak(fallbackMsg, function () { hideTypingBubble(); addAiMessage(fallbackMsg); }, function () {
+              ivConversationHistory.push({ role: 'ai', content: fallbackMsg });
               startListening(function (ans) { handleAnswer(ans, 1); });
             });
+            return;
+          }
+          var aiText = (resp.message || '') + (resp.question ? ' ' + resp.question : '');
+          if (resp.question) ivAskedQuestions.push(resp.question);
+          ivConversationHistory.push({ role: 'ai', content: aiText });
+          ivQCurrent.textContent = 1;
+          speak(aiText, function () { hideTypingBubble(); addAiMessage(aiText); }, function () {
+            startListening(function (ans) { handleAnswer(ans, 1); });
           });
         });
       });
@@ -4961,73 +4960,72 @@ description
     ivConversationHistory.push({ role: 'candidate', content: answer });
     setMicListening(false);
 
-    showTyping(function () {
-      callGeminiForController(buildEvalPrompt(answer, questionNum), function (resp) {
-        if (!resp) {
-          // Fallback: just go to next question
-          var nextNum = questionNum + 1;
-          if (nextNum <= ivTotalQuestions) {
-            var fb = 'Good answer! Let me ask you the next question.';
-            speak(fb, function () { addAiMessage(fb); }, function () {
-              ivCurrentQuestion = nextNum;
-              ivQCurrent.textContent = nextNum;
-              askFallbackQuestion(nextNum);
-            });
-          } else {
-            endInterviewFlow();
-          }
-          return;
-        }
-
-        // Record evaluation
-        if (resp.evaluation) {
-          ivEvaluations.push({ questionNum: questionNum, answer: answer, evaluation: resp.evaluation });
-        }
-
-        var action = resp.action || 'nextQuestion';
-        var aiText = (resp.message || '') + (resp.question ? ' ' + resp.question : '');
-        if (!aiText.trim()) aiText = 'Let\'s move on to the next question.';
-
-        // Track every question asked so the AI never repeats one
-        if (resp.question) ivAskedQuestions.push(resp.question);
-
-        ivConversationHistory.push({ role: 'ai', content: aiText });
-
-        if (action === 'finish') {
-          speak(aiText, function () { addAiMessage(aiText); }, function () {
-            setTimeout(function () { endInterviewFlow(); }, 1200);
+    showTypingBubble();
+    callGeminiForController(buildEvalPrompt(answer, questionNum), function (resp) {
+      if (!resp) {
+        // Fallback: just go to next question
+        var nextNum = questionNum + 1;
+        if (nextNum <= ivTotalQuestions) {
+          var fb = 'Good answer! Let me ask you the next question.';
+          speak(fb, function () { hideTypingBubble(); addAiMessage(fb); }, function () {
+            ivCurrentQuestion = nextNum;
+            ivQCurrent.textContent = nextNum;
+            askFallbackQuestion(nextNum);
           });
+        } else {
+          hideTypingBubble();
+          endInterviewFlow();
+        }
+        return;
+      }
+
+      // Record evaluation
+      if (resp.evaluation) {
+        ivEvaluations.push({ questionNum: questionNum, answer: answer, evaluation: resp.evaluation });
+      }
+
+      var action = resp.action || 'nextQuestion';
+      var aiText = (resp.message || '') + (resp.question ? ' ' + resp.question : '');
+      if (!aiText.trim()) aiText = 'Let\'s move on to the next question.';
+
+      // Track every question asked so the AI never repeats one
+      if (resp.question) ivAskedQuestions.push(resp.question);
+
+      ivConversationHistory.push({ role: 'ai', content: aiText });
+
+      if (action === 'finish') {
+        speak(aiText, function () { hideTypingBubble(); addAiMessage(aiText); }, function () {
+          setTimeout(function () { endInterviewFlow(); }, 1200);
+        });
+        return;
+      }
+
+      // Count actual main questions (not follow-ups, hints, etc.)
+      var isNewQuestion = (action === 'nextQuestion' || action === 'changeTopic' || action === 'increaseDifficulty' || action === 'decreaseDifficulty');
+      var nextNum = isNewQuestion ? questionNum + 1 : questionNum;
+      if (isNewQuestion) {
+        ivCurrentQuestion = nextNum;
+        ivQCurrent.textContent = nextNum;
+        if (nextNum > ivTotalQuestions) {
+          speak(aiText, function () { hideTypingBubble(); addAiMessage(aiText); }, function () { setTimeout(endInterviewFlow, 1000); });
           return;
         }
+      }
 
-        // Count actual main questions (not follow-ups, hints, etc.)
-        var isNewQuestion = (action === 'nextQuestion' || action === 'changeTopic' || action === 'increaseDifficulty' || action === 'decreaseDifficulty');
-        var nextNum = isNewQuestion ? questionNum + 1 : questionNum;
-        if (isNewQuestion) {
-          ivCurrentQuestion = nextNum;
-          ivQCurrent.textContent = nextNum;
-          if (nextNum > ivTotalQuestions) {
-            speak(aiText, function () { addAiMessage(aiText); }, function () { setTimeout(endInterviewFlow, 1000); });
-            return;
-          }
-        }
-
-        speak(aiText, function () { addAiMessage(aiText); }, function () {
-          startListening(function (ans) { handleAnswer(ans, nextNum); });
-        });
+      speak(aiText, function () { hideTypingBubble(); addAiMessage(aiText); }, function () {
+        startListening(function (ans) { handleAnswer(ans, nextNum); });
       });
     });
   }
 
   function askFallbackQuestion(num) {
     var q = sampleQuestions[num - 1] || 'That wraps up our interview. Thank you so much!';
-    showTyping(function () {
-      var text = 'Question ' + num + ' of ' + ivTotalQuestions + ': ' + q;
-      ivConversationHistory.push({ role: 'ai', content: text });
-      ivQCurrent.textContent = num;
-      speak(text, function () { addAiMessage(text); }, function () {
-        startListening(function (ans) { handleAnswer(ans, num); });
-      });
+    showTypingBubble();
+    var text = 'Question ' + num + ' of ' + ivTotalQuestions + ': ' + q;
+    ivConversationHistory.push({ role: 'ai', content: text });
+    ivQCurrent.textContent = num;
+    speak(text, function () { hideTypingBubble(); addAiMessage(text); }, function () {
+      startListening(function (ans) { handleAnswer(ans, num); });
     });
   }
 
@@ -5057,7 +5055,13 @@ description
   }
 
   var typingEl = null;
-  function showTyping(callback) {
+  // Shows the "thinking" bubble immediately and keeps it visible for the
+  // *entire* wait — the LLM controller call, then the TTS fetch — instead of
+  // a fixed 1.4s guess. It's only removed at the exact moment the reply text
+  // and voice are ready to appear (see speak()'s onStart callback below), so
+  // there's no blank gap and no chance of the caption/voice drifting apart.
+  function showTypingBubble() {
+    if (typingEl) return;
     typingEl = document.createElement('div');
     typingEl.className = 'iv-msg iv-msg-ai';
     typingEl.innerHTML =
@@ -5065,10 +5069,9 @@ description
       '<div class="iv-bubble"><div class="iv-typing"><span></span><span></span><span></span></div></div>';
     ivMessages.appendChild(typingEl);
     ivMessages.scrollTop = ivMessages.scrollHeight;
-    setTimeout(function () {
-      if (typingEl) { typingEl.remove(); typingEl = null; }
-      callback();
-    }, 1400);
+  }
+  function hideTypingBubble() {
+    if (typingEl) { typingEl.remove(); typingEl = null; }
   }
 
   // state: 'speaking' = AI TTS active | 'listening' = user's turn | 'processing' = evaluating
@@ -5104,10 +5107,9 @@ description
     stopGeminiTTS(); if (window.speechSynthesis) window.speechSynthesis.cancel();
 
     var closingText = 'It was really nice talking with you today. Thank you so much for your time — you did great!';
-    showTyping(function () {
-      speak(closingText, function () { addAiMessage(closingText); }, function () {
-        setTimeout(function () { showReport(false); }, 1500);
-      });
+    showTypingBubble();
+    speak(closingText, function () { hideTypingBubble(); addAiMessage(closingText); }, function () {
+      setTimeout(function () { showReport(false); }, 1500);
     });
   }
 
@@ -5122,6 +5124,7 @@ description
     // Kill the interview immediately — this prevents any pending speak() onEnd
     // callbacks or startListening() calls from firing after ESC / End Interview.
     ivInterviewActive = false;
+    hideTypingBubble();
 
     // Leave full-screen mode, if we're in it
     exitInterviewFullscreen();
