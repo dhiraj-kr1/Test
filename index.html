@@ -5104,7 +5104,7 @@ description
   // ---- Post-interview: "Do you have any questions for me?" ----
   var ivDoubtsRound = 0;
   var IV_MAX_DOUBT_ROUNDS = 3; // safety cap so this can't loop forever
-  var IV_NO_DOUBT_RE = /^(no|nope|nah|nothing|no thanks|no thank you|not really|i'?m good|im good|all good|none|no questions|that'?s all|thats all|i don'?t have any|i dont have any)\.?!?\s*$/i;
+  var IV_NO_DOUBT_RE = /^(no+p?e?|nah|nothing|no[\s,]*thanks?|no[\s,]*thank[\s,]*you|not[\s,]*really|i'?m[\s,]*good|im[\s,]*good|all[\s,]*good|none|no[\s,]*questions?|no[\s,]*more[\s,]*questions?|no[\s,]*other[\s,]*questions?|any[\s,]*more[\s,]*questions?|any[\s,]*other[\s,]*questions?|that'?s[\s,]*all|thats[\s,]*all|i[\s,]*don'?t[\s,]*have[\s,]*any([\s,]*questions?)?|i[\s,]*dont[\s,]*have[\s,]*any([\s,]*questions?)?|not[\s,]*at[\s,]*this[\s,]*time|not[\s,]*at[\s,]*the[\s,]*moment|no[\s,]*further[\s,]*questions?)[\s.!,]*$/i;
 
   function askCandidateDoubts() {
     ivDoubtsRound = 0;
