@@ -2754,18 +2754,6 @@
         <div class="step1-block-title">AI Configuration</div>
         <div class="field-grid">
 
-          <!-- Provider toggle -->
-          <div class="field" style="grid-column: 1 / -1;">
-            <label>AI Provider</label>
-            <div class="toggle-group" id="ai-provider-toggle">
-              <button type="button" class="toggle-btn active" data-provider="gemini">Gemini (Cloud API)</button>
-              <button type="button" class="toggle-btn" data-provider="ollama">Ollama (Local, No API Key)</button>
-            </div>
-          </div>
-
-          <!-- Gemini fields -->
-          <div id="gemini-fields" style="display:contents;">
-
           <!-- API Key -->
           <div class="field" style="grid-column: 1 / -1;">
             <div class="field-label-row" style="margin-bottom: 6px;">
@@ -2806,36 +2794,6 @@
               <option value="gemma-4-26b"             >Gemma 4 26B</option>
               <option value="gemma-4-31b"             >Gemma 4 31B</option>
             </select>
-          </div>
-
-          </div>
-
-          <!-- Ollama fields -->
-          <div id="ollama-fields" style="display:none;">
-
-          <div class="field" style="grid-column: 1 / -1;">
-            <div class="field-label-row" style="margin-bottom: 6px;">
-              <label for="ollama_base_url" style="font-size:13px; font-weight:600; color:var(--on-surface-variant); letter-spacing:0.05em; text-transform:uppercase;">Ollama Server URL</label>
-              <a href="https://ollama.com/download" target="_blank" rel="noopener" class="api-key-link">
-                <span class="material-symbols-outlined" style="font-size:13px;">open_in_new</span>
-                Get Ollama
-              </a>
-            </div>
-            <div class="api-key-box">
-              <span class="material-symbols-outlined api-key-icon">dns</span>
-              <input id="ollama_base_url" type="text" placeholder="http://localhost:11434" value="http://localhost:11434" autocomplete="off" spellcheck="false">
-            </div>
-            <div class="api-key-status" id="ollama-status"></div>
-          </div>
-
-          <div class="field" style="grid-column: 1 / -1;">
-            <label for="ollama_model">Ollama Model</label>
-            <input id="ollama_model" type="text" placeholder="e.g. llama3.1, mistral, phi3" value="llama3.1" autocomplete="off" spellcheck="false">
-            <div style="font-size:12px; color:var(--on-surface-variant); margin-top:4px;">
-              Runs fully on this machine — no API key needed. Model must already be pulled (<code>ollama pull llama3.1</code>) and the Ollama app must be running.
-            </div>
-          </div>
-
           </div>
 
         </div>
@@ -3544,17 +3502,8 @@ description
     document.getElementById('gemini_model').value = 'gemini-3.5-flash';
     apiKeyValidated = false;
 
-    // Reset AI provider toggle back to Gemini
+    // Reset AI provider (Gemini only)
     aiProvider = 'gemini';
-    ollamaValidated = false;
-    providerToggle.querySelectorAll('.toggle-btn').forEach(function (b) { b.classList.remove('active'); });
-    providerToggle.querySelector('.toggle-btn[data-provider="gemini"]').classList.add('active');
-    geminiFieldsEl.style.display = 'contents';
-    ollamaFieldsEl.style.display = 'none';
-    document.getElementById('ollama_base_url').value = 'http://localhost:11434';
-    document.getElementById('ollama_model').value = 'llama3.1';
-    document.getElementById('ollama-status').className = 'api-key-status';
-    document.getElementById('ollama-status').innerHTML = '';
 
     // Reset difficulty toggle to Easy
     difficultyToggle.querySelectorAll('.toggle-btn').forEach(function (b) { b.classList.remove('active'); });
@@ -3717,78 +3666,8 @@ description
     });
   }
 
-  // ---- AI Provider toggle (Gemini vs local Ollama) ----
+  // ---- AI Provider (Gemini only) ----
   var aiProvider = 'gemini';
-  var ollamaValidated = false;
-  var providerToggle = document.getElementById('ai-provider-toggle');
-  var geminiFieldsEl = document.getElementById('gemini-fields');
-  var ollamaFieldsEl = document.getElementById('ollama-fields');
-
-  providerToggle.querySelectorAll('.toggle-btn').forEach(function (btn) {
-    btn.addEventListener('click', function () {
-      providerToggle.querySelectorAll('.toggle-btn').forEach(function (b) { b.classList.remove('active'); });
-      btn.classList.add('active');
-      aiProvider = btn.getAttribute('data-provider');
-      geminiFieldsEl.style.display = (aiProvider === 'gemini') ? 'contents' : 'none';
-      ollamaFieldsEl.style.display = (aiProvider === 'ollama') ? 'contents' : 'none';
-    });
-  });
-
-  function setOllamaStatus(state, msg) {
-    var el = document.getElementById('ollama-status');
-    el.className = 'api-key-status ' + state;
-    var icon = state === 'valid' ? 'check_circle' : state === 'invalid' ? 'cancel' : 'hourglass_top';
-    el.innerHTML = '<span class="material-symbols-outlined">' + icon + '</span>' + escHtml(msg);
-    ollamaValidated = (state === 'valid');
-  }
-
-  // Checks the Ollama server is reachable and the requested model is
-  // actually pulled — both are common first-run failure points for a
-  // local setup, so surface them clearly rather than failing silently
-  // mid-interview.
-  function validateOllamaConnection() {
-    var baseUrl = document.getElementById('ollama_base_url').value.trim().replace(/\/+$/, '');
-    var model = document.getElementById('ollama_model').value.trim();
-    if (!baseUrl) {
-      setOllamaStatus('invalid', 'Enter your Ollama server URL.');
-      return;
-    }
-    if (!model) {
-      setOllamaStatus('invalid', 'Enter the Ollama model name.');
-      return;
-    }
-    setOllamaStatus('checking', 'Checking Ollama connection…');
-    fetch(baseUrl + '/api/tags')
-      .then(function (r) { return r.json().then(function (d) { return { status: r.status, data: d }; }); })
-      .then(function (res) {
-        if (res.status !== 200) {
-          setOllamaStatus('invalid', 'Could not reach Ollama at ' + baseUrl + '.');
-          return;
-        }
-        var models = (res.data && res.data.models) || [];
-        var hasModel = models.some(function (m) { return m.name === model || m.name === model + ':latest' || (m.name || '').indexOf(model + ':') === 0; });
-        if (hasModel) {
-          setOllamaStatus('valid', 'Connected — model "' + model + '" is available.');
-        } else {
-          setOllamaStatus('invalid', 'Ollama is running, but "' + model + '" isn\'t pulled yet. Run: ollama pull ' + model);
-        }
-      })
-      .catch(function () {
-        setOllamaStatus('invalid', 'Could not reach Ollama at ' + baseUrl + '. Is the app running?');
-      });
-  }
-
-  var ollamaUrlInput = document.getElementById('ollama_base_url');
-  var ollamaModelInput = document.getElementById('ollama_model');
-  var ollamaValidTimer = null;
-  [ollamaUrlInput, ollamaModelInput].forEach(function (inp) {
-    inp.addEventListener('input', function () {
-      clearTimeout(ollamaValidTimer);
-      ollamaValidated = false;
-      ollamaValidTimer = setTimeout(validateOllamaConnection, 700);
-    });
-    inp.addEventListener('blur', validateOllamaConnection);
-  });
 
   var apiKeyInput = document.getElementById('gemini_api_key');
   apiKeyInput.addEventListener('input', function () {
@@ -3895,27 +3774,18 @@ description
       return;
     }
 
-    // Validate provider connection (Gemini key or Ollama reachability)
-    var apiKey = '';
-    if (aiProvider === 'ollama') {
-      if (!ollamaValidated) {
-        validateOllamaConnection();
-        document.getElementById('ollama_base_url').focus();
-        return;
-      }
-    } else {
-      apiKey = document.getElementById('gemini_api_key').value.trim();
-      if (!apiKey) {
-        document.getElementById('gemini_api_key').focus();
-        setApiKeyStatus('invalid', 'Please enter your Gemini API key to continue.');
-        return;
-      }
-      if (!apiKeyValidated) {
-        // Trigger validation and block
-        validateApiKey(apiKey);
-        document.getElementById('gemini_api_key').focus();
-        return;
-      }
+    // Validate Gemini API key
+    var apiKey = document.getElementById('gemini_api_key').value.trim();
+    if (!apiKey) {
+      document.getElementById('gemini_api_key').focus();
+      setApiKeyStatus('invalid', 'Please enter your Gemini API key to continue.');
+      return;
+    }
+    if (!apiKeyValidated) {
+      // Trigger validation and block
+      validateApiKey(apiKey);
+      document.getElementById('gemini_api_key').focus();
+      return;
     }
 
     var config = {
@@ -3930,9 +3800,7 @@ description
       skills: skills,
       aiProvider: aiProvider,
       geminiApiKey: apiKey,
-      geminiModel: document.getElementById('gemini_model').value,
-      ollamaBaseUrl: document.getElementById('ollama_base_url').value.trim().replace(/\/+$/, ''),
-      ollamaModel: document.getElementById('ollama_model').value.trim()
+      geminiModel: document.getElementById('gemini_model').value
     };
 
     window.interviewConfig = config;
@@ -5100,8 +4968,7 @@ description
   }
 
   // Builds the full prompt text (system prompt + conversation history +
-  // current task) shared by every provider — Gemini and Ollama both just
-  // need a single text blob to send.
+  // current task) used to build the prompt sent to Gemini.
   function buildCombinedPrompt(promptText) {
     var systemMsg = buildSystemPrompt();
     if (ivConversationHistory.length === 0) {
@@ -5116,8 +4983,7 @@ description
   }
 
   // Parses a raw model text response into the controller JSON shape,
-  // tolerating markdown fences and near-valid JSON. Shared by every
-  // provider so Gemini and Ollama get identical robustness.
+  // tolerating markdown fences and near-valid JSON.
   function parseModelJsonResponse(text, callback) {
     var clean = text.replace(/```json\s*/gi,'').replace(/```\s*/g,'').trim();
     var match = clean.match(/\{[\s\S]*\}/);
@@ -5148,45 +5014,18 @@ description
     }
   }
 
-  // ---- Ollama (local, no API key) ----
-  function callOllamaForController(promptText, callback) {
-    var cfg = window.interviewConfig || {};
-    var baseUrl = (cfg.ollamaBaseUrl || 'http://localhost:11434').replace(/\/+$/, '');
-    var model = cfg.ollamaModel || 'llama3.1';
-    var prompt = buildCombinedPrompt(promptText);
-
-    fetch(baseUrl + '/api/generate', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ model: model, prompt: prompt, stream: false })
-    })
-    .then(function (r) { return r.json().then(function (d) { return { status: r.status, data: d }; }); })
-    .then(function (res) {
-      if (res.status === 200 && res.data && res.data.response) {
-        parseModelJsonResponse(res.data.response, callback);
-      } else {
-        var errMsg = (res.data && res.data.error) ? res.data.error : 'Ollama request failed (status ' + res.status + ')';
-        callback(null, errMsg);
-      }
-    })
-    .catch(function () {
-      callback(null, 'Could not reach Ollama at ' + baseUrl + '. Is it running?');
-    });
-  }
-
   function callGeminiForController(promptText, callback) {
     var cfg = window.interviewConfig || {};
-    var provider = cfg.aiProvider || 'gemini';
 
     // Circuit breaker: once we've seen enough consecutive failures this
-    // session, assume the API/local model is unreachable and stop
-    // retrying on every turn — go straight to the fallback so the
-    // interview keeps moving without extra delay.
+    // session, assume the API is unreachable and stop retrying on every
+    // turn — go straight to the fallback so the interview keeps moving
+    // without extra delay.
     if (ivApiDegraded) { callback(null, 'API degraded — skipping network call'); return; }
 
     // Wrap the caller's callback so every path through this function
     // (success, parse failure, network failure) updates the consecutive
-    // failure count in one place, regardless of provider.
+    // failure count in one place.
     var origCallback = callback;
     callback = function (resp, err) {
       if (resp) {
@@ -5199,11 +5038,6 @@ description
       }
       origCallback(resp, err);
     };
-
-    if (provider === 'ollama') {
-      callOllamaForController(promptText, callback);
-      return;
-    }
 
     var key = cfg.geminiApiKey;
     if (!key) { callback(null, 'No API key'); return; }
