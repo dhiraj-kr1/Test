@@ -3052,7 +3052,7 @@ work_history
         </div>
         <div class="iv-chat-hint" id="iv-chat-hint-text">Please wait while Karia is speaking…</div>
         <div class="iv-no-stt" id="iv-no-stt-notice" style="display:none;">
-          ⚠ Voice input is not supported in this browser. Please use Chrome or Edge.
+          ⚠ Speech recognition not available in this browser. Use Chrome or Edge for voice input.
         </div>
       </div>
     </div>
@@ -4433,7 +4433,6 @@ description
     if (micStream) {
       ivWaveCanvas.style.display = 'block';
       startIvWaveform(micStream, ivWaveCanvas);
-      window._ivMicStream = micStream; // expose for Gemini STT recorder
     }
 
     // Show interview page, hide setup flow
@@ -4448,180 +4447,88 @@ description
     setTimeout(function () { runIntroSequence(name, config.position || 'this role'); }, 600);
   }
 
-  // ===================== SPEECH-TO-TEXT (Gemini STT + Web Speech fallback) =====================
-  // Strategy:
-  //   1. MediaRecorder captures raw audio the whole time the user speaks.
-  //   2. Web Speech API (if available) provides live interim captions only — no commit logic.
-  //   3. On silence (2.5 s of no Web Speech activity) OR manual commit, the recorded audio
-  //      blob is sent to Gemini's multimodal generateContent endpoint for final transcription.
-  //      This reuses the same Gemini API key already entered by the user.
-  //   4. If Gemini STT fails for any reason, we fall back to whatever Web Speech captured.
-
+  // ===================== SPEECH-TO-TEXT (Web Speech API) =====================
   var SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-  var recognition       = null;
-  var isListening       = false;
-  var currentTranscript = '';   // confirmed final text (from Gemini or Web Speech)
-  var interimTranscript = '';   // live interim from Web Speech (display only)
+  var recognition = null;
+  var isListening = false;
+  var currentTranscript = '';
   var speechSilenceTimer = null;
-  var onAnswerReady     = null; // callback(transcript)
-  var ivInterviewActive = false;
+  var onAnswerReady = null; // callback(transcript)
+  var ivInterviewActive = false; // set true when interview starts, false on any exit
 
-  // MediaRecorder state
-  var mediaRecorder     = null;
-  var audioChunks       = [];
-  var recordingStream   = null;  // kept separately so we can stop tracks
-
-  // ---- Gemini STT ----
-  function transcribeWithGemini(audioBlob, fallbackText, callback) {
-    var cfg = window.interviewConfig || {};
-    var key = cfg.geminiApiKey;
-    if (!key || !audioBlob || audioBlob.size < 1000) {
-      // blob too small or no key — use Web Speech fallback
-      callback(fallbackText || '');
-      return;
-    }
-
-    var reader = new FileReader();
-    reader.onloadend = function () {
-      var base64Audio = reader.result.split(',')[1];
-      var mimeType    = audioBlob.type || 'audio/webm';
-
-      // Pick model: prefer flash for speed
-      var model = (cfg.geminiModel || 'gemini-2.5-flash')
-                    .replace('gemini-3.', 'gemini-2.').replace('gemini-3-', 'gemini-2.0-');
-      // Always use a real Gemini model that supports audio
-      var sttModel = 'gemini-2.0-flash';
-
-      var payload = {
-        contents: [{
-          parts: [
-            { text: 'Transcribe the following audio exactly as spoken. Return only the spoken text, nothing else. No explanations, no punctuation corrections — just the raw transcript.' },
-            { inline_data: { mime_type: mimeType, data: base64Audio } }
-          ]
-        }]
-      };
-
-      fetch('https://generativelanguage.googleapis.com/v1beta/models/' + sttModel + ':generateContent?key=' + encodeURIComponent(key), {
-        method:  'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body:    JSON.stringify(payload)
-      })
-      .then(function (r) { return r.json(); })
-      .then(function (data) {
-        var text = '';
-        if (data.candidates && data.candidates[0] && data.candidates[0].content) {
-          text = data.candidates[0].content.parts.map(function (p) { return p.text || ''; }).join('').trim();
-        }
-        callback(text || fallbackText || '');
-      })
-      .catch(function () {
-        callback(fallbackText || '');
-      });
-    };
-    reader.readAsDataURL(audioBlob);
-  }
-
-  // ---- Web Speech (interim captions only) ----
   function initSpeechRecognition() {
     if (!SpeechRecognition) return;
     recognition = new SpeechRecognition();
-    recognition.continuous      = true;
-    recognition.interimResults  = true;
-    recognition.lang            = 'en-US';
+    recognition.continuous = true;
+    recognition.interimResults = true;
+    recognition.lang = 'en-US';
     recognition.maxAlternatives = 1;
 
     recognition.onresult = function (event) {
       var interim = '';
-      var finalChunk = '';
+      var final = '';
       for (var i = event.resultIndex; i < event.results.length; i++) {
         var t = event.results[i][0].transcript;
-        if (event.results[i].isFinal) { finalChunk += t; }
+        if (event.results[i].isFinal) { final += t; }
         else { interim += t; }
       }
-      // Accumulate into interimTranscript for display; Gemini handles final
-      interimTranscript = interim;
-      updateLiveTranscript('', interimTranscript);
-
-      // Reset silence timer on any speech activity
+      if (final) {
+        currentTranscript += (currentTranscript ? ' ' : '') + final.trim();
+        updateLiveTranscript(currentTranscript, '');
+      } else {
+        updateLiveTranscript(currentTranscript, interim);
+      }
+      // Reset silence timer — commit answer after 2.5 s of no new speech
       clearTimeout(speechSilenceTimer);
-      speechSilenceTimer = setTimeout(function () {
-        if (isListening) commitAnswer();
-      }, 2500);
+      if (currentTranscript) {
+        speechSilenceTimer = setTimeout(function () {
+          commitAnswer();
+        }, 2500);
+      }
     };
 
     recognition.onerror = function (e) {
       if (e.error === 'no-speech' || e.error === 'aborted') return;
-      console.warn('Web Speech error:', e.error);
+      console.warn('Speech error:', e.error);
     };
 
     recognition.onend = function () {
+      // Auto-restart while listening is active (Chrome stops after ~60 s)
       if (isListening) {
         try { recognition.start(); } catch(e) {}
       }
     };
   }
 
-  // ---- MediaRecorder helpers ----
-  function startMediaRecorder(stream) {
-    audioChunks = [];
-    var mimeType = '';
-    var types = ['audio/webm;codecs=opus','audio/webm','audio/ogg;codecs=opus','audio/ogg','audio/mp4'];
-    for (var i = 0; i < types.length; i++) {
-      if (MediaRecorder.isTypeSupported(types[i])) { mimeType = types[i]; break; }
+  // Live "ghost" transcript bubble shown while the candidate speaks
+  var liveTranscriptEl = null;
+  function updateLiveTranscript(final, interim) {
+    if (!liveTranscriptEl) {
+      liveTranscriptEl = document.createElement('div');
+      liveTranscriptEl.className = 'iv-msg iv-msg-user';
+      liveTranscriptEl.innerHTML =
+        '<div class="iv-msg-avatar"><span class="material-symbols-outlined">person</span></div>' +
+        '<div class="iv-bubble iv-bubble-live"><div class="iv-bubble-label">You</div><span class="live-final"></span><span class="live-interim"></span></div>';
+      ivMessages.appendChild(liveTranscriptEl);
     }
-    try {
-      mediaRecorder = new MediaRecorder(stream, mimeType ? { mimeType: mimeType } : {});
-    } catch(e) {
-      mediaRecorder = new MediaRecorder(stream);
-    }
-    mediaRecorder.ondataavailable = function (e) {
-      if (e.data && e.data.size > 0) audioChunks.push(e.data);
-    };
-    mediaRecorder.start(250); // collect chunks every 250 ms
+    liveTranscriptEl.querySelector('.live-final').textContent = final;
+    liveTranscriptEl.querySelector('.live-interim').textContent = interim ? ' ' + interim : '';
+    ivMessages.scrollTop = ivMessages.scrollHeight;
   }
 
-  function stopMediaRecorder(callback) {
-    if (!mediaRecorder || mediaRecorder.state === 'inactive') {
-      callback(null); return;
-    }
-    mediaRecorder.onstop = function () {
-      var mimeType = mediaRecorder.mimeType || 'audio/webm';
-      var blob = new Blob(audioChunks, { type: mimeType });
-      audioChunks = [];
-      callback(blob);
-    };
-    try { mediaRecorder.stop(); } catch(e) { callback(null); }
+  function clearLiveTranscript() {
+    if (liveTranscriptEl) { liveTranscriptEl.remove(); liveTranscriptEl = null; }
   }
 
-  // ---- Public STT interface ----
   function startListening(callback) {
+    // Don't restart listening if the interview has already ended (e.g. ESC pressed).
     if (!ivInterviewActive) return;
     currentTranscript = '';
-    interimTranscript = '';
-    onAnswerReady     = callback;
-    isListening       = true;
+    onAnswerReady = callback;
+    isListening = true;
     setMicListening('listening');
-
-    // Start Web Speech for live captions
     if (recognition) {
       try { recognition.start(); } catch(e) {}
-    }
-
-    // Start MediaRecorder using the existing mic stream if available,
-    // or request a fresh one
-    var existingStream = window._ivMicStream || null;
-    if (existingStream && existingStream.active) {
-      startMediaRecorder(existingStream);
-    } else {
-      navigator.mediaDevices.getUserMedia({ audio: true, video: false })
-        .then(function (stream) {
-          recordingStream = stream;
-          window._ivMicStream = stream;
-          startMediaRecorder(stream);
-        })
-        .catch(function () {
-          // No mic access — Web Speech only (already started above)
-        });
     }
   }
 
@@ -4633,27 +4540,20 @@ description
   }
 
   function commitAnswer() {
-    if (!isListening) return; // guard against double-commit
+    var answer = currentTranscript.trim();
     stopListening();
     clearLiveTranscript();
-
-    var webSpeechFallback = interimTranscript.trim() || currentTranscript.trim();
-    interimTranscript = '';
-    currentTranscript = '';
-
-    // Stop recorder and transcribe with Gemini
-    stopMediaRecorder(function (audioBlob) {
-      transcribeWithGemini(audioBlob, webSpeechFallback, function (finalText) {
-        if (!ivInterviewActive) return; // interview ended while transcribing
-        var answer = finalText.trim() || '(No response detected)';
-        addUserMessage(answer);
-        if (onAnswerReady) {
-          var cb = onAnswerReady;
-          onAnswerReady = null;
-          cb(answer);
-        }
-      });
-    });
+    if (answer) {
+      addUserMessage(answer);
+    } else {
+      answer = '(No response detected)';
+      addUserMessage(answer);
+    }
+    if (onAnswerReady) {
+      var cb = onAnswerReady;
+      onAnswerReady = null;
+      cb(answer);
+    }
   }
 
 
@@ -5479,14 +5379,10 @@ description
   });
 
   // ---- STT availability check ----
-  // Gemini STT (MediaRecorder) works in all modern browsers regardless of Web Speech API.
-  // We only show the notice if BOTH Gemini key AND MediaRecorder are unavailable.
   (function () {
-    var hasWebSpeech    = !!(window.SpeechRecognition || window.webkitSpeechRecognition);
-    var hasMediaRecorder = !!(window.MediaRecorder);
-    if (!hasWebSpeech && !hasMediaRecorder) {
+    if (!window.SpeechRecognition && !window.webkitSpeechRecognition) {
       document.getElementById('iv-no-stt-notice').style.display = 'block';
-      document.getElementById('iv-chat-hint-text').textContent = 'Voice input is not supported in this browser.';
+      document.getElementById('iv-chat-hint-text').textContent = 'Type or speak — voice may not be available in this browser.';
     }
   })();
 
