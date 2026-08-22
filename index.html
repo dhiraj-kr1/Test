@@ -2753,6 +2753,18 @@
         <div class="step1-block-title">AI Configuration</div>
         <div class="field-grid">
 
+          <!-- Provider toggle -->
+          <div class="field" style="grid-column: 1 / -1;">
+            <label>AI Provider</label>
+            <div class="toggle-group" id="ai-provider-toggle">
+              <button type="button" class="toggle-btn active" data-provider="gemini">Gemini (Cloud API)</button>
+              <button type="button" class="toggle-btn" data-provider="ollama">Ollama (Local, No API Key)</button>
+            </div>
+          </div>
+
+          <!-- Gemini fields -->
+          <div id="gemini-fields" style="display:contents;">
+
           <!-- API Key -->
           <div class="field" style="grid-column: 1 / -1;">
             <div class="field-label-row" style="margin-bottom: 6px;">
@@ -2793,6 +2805,36 @@
               <option value="gemma-4-26b"             >Gemma 4 26B</option>
               <option value="gemma-4-31b"             >Gemma 4 31B</option>
             </select>
+          </div>
+
+          </div>
+
+          <!-- Ollama fields -->
+          <div id="ollama-fields" style="display:none;">
+
+          <div class="field" style="grid-column: 1 / -1;">
+            <div class="field-label-row" style="margin-bottom: 6px;">
+              <label for="ollama_base_url" style="font-size:13px; font-weight:600; color:var(--on-surface-variant); letter-spacing:0.05em; text-transform:uppercase;">Ollama Server URL</label>
+              <a href="https://ollama.com/download" target="_blank" rel="noopener" class="api-key-link">
+                <span class="material-symbols-outlined" style="font-size:13px;">open_in_new</span>
+                Get Ollama
+              </a>
+            </div>
+            <div class="api-key-box">
+              <span class="material-symbols-outlined api-key-icon">dns</span>
+              <input id="ollama_base_url" type="text" placeholder="http://localhost:11434" value="http://localhost:11434" autocomplete="off" spellcheck="false">
+            </div>
+            <div class="api-key-status" id="ollama-status"></div>
+          </div>
+
+          <div class="field" style="grid-column: 1 / -1;">
+            <label for="ollama_model">Ollama Model</label>
+            <input id="ollama_model" type="text" placeholder="e.g. llama3.1, mistral, phi3" value="llama3.1" autocomplete="off" spellcheck="false">
+            <div style="font-size:12px; color:var(--on-surface-variant); margin-top:4px;">
+              Runs fully on this machine — no API key needed. Model must already be pulled (<code>ollama pull llama3.1</code>) and the Ollama app must be running.
+            </div>
+          </div>
+
           </div>
 
         </div>
@@ -3501,6 +3543,18 @@ description
     document.getElementById('gemini_model').value = 'gemini-3.5-flash';
     apiKeyValidated = false;
 
+    // Reset AI provider toggle back to Gemini
+    aiProvider = 'gemini';
+    ollamaValidated = false;
+    providerToggle.querySelectorAll('.toggle-btn').forEach(function (b) { b.classList.remove('active'); });
+    providerToggle.querySelector('.toggle-btn[data-provider="gemini"]').classList.add('active');
+    geminiFieldsEl.style.display = 'contents';
+    ollamaFieldsEl.style.display = 'none';
+    document.getElementById('ollama_base_url').value = 'http://localhost:11434';
+    document.getElementById('ollama_model').value = 'llama3.1';
+    document.getElementById('ollama-status').className = 'api-key-status';
+    document.getElementById('ollama-status').innerHTML = '';
+
     // Reset difficulty toggle to Easy
     difficultyToggle.querySelectorAll('.toggle-btn').forEach(function (b) { b.classList.remove('active'); });
     difficultyToggle.querySelector('.toggle-btn').classList.add('active');
@@ -3662,6 +3716,79 @@ description
     });
   }
 
+  // ---- AI Provider toggle (Gemini vs local Ollama) ----
+  var aiProvider = 'gemini';
+  var ollamaValidated = false;
+  var providerToggle = document.getElementById('ai-provider-toggle');
+  var geminiFieldsEl = document.getElementById('gemini-fields');
+  var ollamaFieldsEl = document.getElementById('ollama-fields');
+
+  providerToggle.querySelectorAll('.toggle-btn').forEach(function (btn) {
+    btn.addEventListener('click', function () {
+      providerToggle.querySelectorAll('.toggle-btn').forEach(function (b) { b.classList.remove('active'); });
+      btn.classList.add('active');
+      aiProvider = btn.getAttribute('data-provider');
+      geminiFieldsEl.style.display = (aiProvider === 'gemini') ? 'contents' : 'none';
+      ollamaFieldsEl.style.display = (aiProvider === 'ollama') ? 'contents' : 'none';
+    });
+  });
+
+  function setOllamaStatus(state, msg) {
+    var el = document.getElementById('ollama-status');
+    el.className = 'api-key-status ' + state;
+    var icon = state === 'valid' ? 'check_circle' : state === 'invalid' ? 'cancel' : 'hourglass_top';
+    el.innerHTML = '<span class="material-symbols-outlined">' + icon + '</span>' + escHtml(msg);
+    ollamaValidated = (state === 'valid');
+  }
+
+  // Checks the Ollama server is reachable and the requested model is
+  // actually pulled — both are common first-run failure points for a
+  // local setup, so surface them clearly rather than failing silently
+  // mid-interview.
+  function validateOllamaConnection() {
+    var baseUrl = document.getElementById('ollama_base_url').value.trim().replace(/\/+$/, '');
+    var model = document.getElementById('ollama_model').value.trim();
+    if (!baseUrl) {
+      setOllamaStatus('invalid', 'Enter your Ollama server URL.');
+      return;
+    }
+    if (!model) {
+      setOllamaStatus('invalid', 'Enter the Ollama model name.');
+      return;
+    }
+    setOllamaStatus('checking', 'Checking Ollama connection…');
+    fetch(baseUrl + '/api/tags')
+      .then(function (r) { return r.json().then(function (d) { return { status: r.status, data: d }; }); })
+      .then(function (res) {
+        if (res.status !== 200) {
+          setOllamaStatus('invalid', 'Could not reach Ollama at ' + baseUrl + '.');
+          return;
+        }
+        var models = (res.data && res.data.models) || [];
+        var hasModel = models.some(function (m) { return m.name === model || m.name === model + ':latest' || (m.name || '').indexOf(model + ':') === 0; });
+        if (hasModel) {
+          setOllamaStatus('valid', 'Connected — model "' + model + '" is available.');
+        } else {
+          setOllamaStatus('invalid', 'Ollama is running, but "' + model + '" isn\'t pulled yet. Run: ollama pull ' + model);
+        }
+      })
+      .catch(function () {
+        setOllamaStatus('invalid', 'Could not reach Ollama at ' + baseUrl + '. Is the app running?');
+      });
+  }
+
+  var ollamaUrlInput = document.getElementById('ollama_base_url');
+  var ollamaModelInput = document.getElementById('ollama_model');
+  var ollamaValidTimer = null;
+  [ollamaUrlInput, ollamaModelInput].forEach(function (inp) {
+    inp.addEventListener('input', function () {
+      clearTimeout(ollamaValidTimer);
+      ollamaValidated = false;
+      ollamaValidTimer = setTimeout(validateOllamaConnection, 700);
+    });
+    inp.addEventListener('blur', validateOllamaConnection);
+  });
+
   var apiKeyInput = document.getElementById('gemini_api_key');
   apiKeyInput.addEventListener('input', function () {
     clearTimeout(apiKeyValidTimer);
@@ -3757,7 +3884,7 @@ description
       }
     }
 
-    var difficulty = document.querySelector('.toggle-btn.active').textContent.trim();
+    var difficulty = difficultyToggle.querySelector('.toggle-btn.active').textContent.trim();
     var skills = Array.from(document.querySelectorAll('.skill-tag')).map(function (t) {
       return t.textContent.replace('close', '').trim();
     });
@@ -3767,18 +3894,27 @@ description
       return;
     }
 
-    // Validate API key
-    var apiKey = document.getElementById('gemini_api_key').value.trim();
-    if (!apiKey) {
-      document.getElementById('gemini_api_key').focus();
-      setApiKeyStatus('invalid', 'Please enter your Gemini API key to continue.');
-      return;
-    }
-    if (!apiKeyValidated) {
-      // Trigger validation and block
-      validateApiKey(apiKey);
-      document.getElementById('gemini_api_key').focus();
-      return;
+    // Validate provider connection (Gemini key or Ollama reachability)
+    var apiKey = '';
+    if (aiProvider === 'ollama') {
+      if (!ollamaValidated) {
+        validateOllamaConnection();
+        document.getElementById('ollama_base_url').focus();
+        return;
+      }
+    } else {
+      apiKey = document.getElementById('gemini_api_key').value.trim();
+      if (!apiKey) {
+        document.getElementById('gemini_api_key').focus();
+        setApiKeyStatus('invalid', 'Please enter your Gemini API key to continue.');
+        return;
+      }
+      if (!apiKeyValidated) {
+        // Trigger validation and block
+        validateApiKey(apiKey);
+        document.getElementById('gemini_api_key').focus();
+        return;
+      }
     }
 
     var config = {
@@ -3791,8 +3927,11 @@ description
       resumePoints: document.getElementById('resume_points').value,
       jobDescription: document.getElementById('job_description').value,
       skills: skills,
+      aiProvider: aiProvider,
       geminiApiKey: apiKey,
-      geminiModel: document.getElementById('gemini_model').value
+      geminiModel: document.getElementById('gemini_model').value,
+      ollamaBaseUrl: document.getElementById('ollama_base_url').value.trim().replace(/\/+$/, ''),
+      ollamaModel: document.getElementById('ollama_model').value.trim()
     };
 
     window.interviewConfig = config;
@@ -4793,6 +4932,16 @@ description
   var ivAnswerTimer = null;       // fallback timeout if STT not available
   var ivAskedQuestions = [];      // tracks every question asked to prevent repeats
 
+  // ---- API failure tracking / circuit breaker ----
+  // If Gemini fails several times in a row (e.g. outage, bad key, no
+  // connection), we stop hammering every model on every remaining turn —
+  // that just adds latency for a candidate who's already mid-interview.
+  // After the threshold trips, calls short-circuit straight to the local
+  // fallback path instead of hitting the network again.
+  var IV_CONSECUTIVE_FAIL_LIMIT = 2;
+  var ivConsecutiveFails = 0;
+  var ivApiDegraded = false;      // true once the circuit breaker has tripped
+
   var EVAL_DIMENSIONS_BY_TYPE = {
     hr: [
       'Confidence','Professionalism','Career Goals','Motivation',
@@ -4949,58 +5098,120 @@ description
     ].join('\n');
   }
 
+  // Builds the full prompt text (system prompt + conversation history +
+  // current task) shared by every provider — Gemini and Ollama both just
+  // need a single text blob to send.
+  function buildCombinedPrompt(promptText) {
+    var systemMsg = buildSystemPrompt();
+    if (ivConversationHistory.length === 0) {
+      return systemMsg + '\n\n' + promptText;
+    }
+    var combined = systemMsg + '\n\n--- CONVERSATION SO FAR ---\n';
+    ivConversationHistory.forEach(function (m) {
+      combined += (m.role === 'ai' ? 'Karia: ' : 'Candidate: ') + m.content + '\n';
+    });
+    combined += '\n--- CURRENT TASK ---\n' + promptText;
+    return combined;
+  }
+
+  // Parses a raw model text response into the controller JSON shape,
+  // tolerating markdown fences and near-valid JSON. Shared by every
+  // provider so Gemini and Ollama get identical robustness.
+  function parseModelJsonResponse(text, callback) {
+    var clean = text.replace(/```json\s*/gi,'').replace(/```\s*/g,'').trim();
+    var match = clean.match(/\{[\s\S]*\}/);
+    if (!match) { callback({ message: text, action: 'nextQuestion' }, null); return; }
+    try {
+      var parsed = JSON.parse(match[0]);
+      callback(parsed, null);
+    } catch(e) {
+      // The model occasionally emits near-valid JSON (unquoted or
+      // dash-prefixed keys, trailing commas). Try to repair it before
+      // giving up, so a raw JSON blob never gets shown to the user.
+      try {
+        var repaired = sanitizeJsonLike(match[0]);
+        var parsedRepaired = JSON.parse(repaired);
+        callback(parsedRepaired, null);
+      } catch (e2) {
+        // Still broken — pull out just the fields we need via regex
+        // rather than dumping the whole (invalid) JSON as chat text.
+        var msg = extractJsonStringField(match[0], 'message')
+               || extractJsonStringField(match[0], 'question')
+               || 'Thanks for sharing that — let\'s continue.';
+        var action = extractJsonStringField(match[0], 'action') || 'nextQuestion';
+        var question = extractJsonStringField(match[0], 'question');
+        var fallback = { message: msg, action: action };
+        if (question) fallback.question = question;
+        callback(fallback, null);
+      }
+    }
+  }
+
+  // ---- Ollama (local, no API key) ----
+  function callOllamaForController(promptText, callback) {
+    var cfg = window.interviewConfig || {};
+    var baseUrl = (cfg.ollamaBaseUrl || 'http://localhost:11434').replace(/\/+$/, '');
+    var model = cfg.ollamaModel || 'llama3.1';
+    var prompt = buildCombinedPrompt(promptText);
+
+    fetch(baseUrl + '/api/generate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model: model, prompt: prompt, stream: false })
+    })
+    .then(function (r) { return r.json().then(function (d) { return { status: r.status, data: d }; }); })
+    .then(function (res) {
+      if (res.status === 200 && res.data && res.data.response) {
+        parseModelJsonResponse(res.data.response, callback);
+      } else {
+        var errMsg = (res.data && res.data.error) ? res.data.error : 'Ollama request failed (status ' + res.status + ')';
+        callback(null, errMsg);
+      }
+    })
+    .catch(function () {
+      callback(null, 'Could not reach Ollama at ' + baseUrl + '. Is it running?');
+    });
+  }
+
   function callGeminiForController(promptText, callback) {
     var cfg = window.interviewConfig || {};
+    var provider = cfg.aiProvider || 'gemini';
+
+    // Circuit breaker: once we've seen enough consecutive failures this
+    // session, assume the API/local model is unreachable and stop
+    // retrying on every turn — go straight to the fallback so the
+    // interview keeps moving without extra delay.
+    if (ivApiDegraded) { callback(null, 'API degraded — skipping network call'); return; }
+
+    // Wrap the caller's callback so every path through this function
+    // (success, parse failure, network failure) updates the consecutive
+    // failure count in one place, regardless of provider.
+    var origCallback = callback;
+    callback = function (resp, err) {
+      if (resp) {
+        ivConsecutiveFails = 0;
+      } else {
+        ivConsecutiveFails++;
+        if (ivConsecutiveFails >= IV_CONSECUTIVE_FAIL_LIMIT) {
+          ivApiDegraded = true;
+        }
+      }
+      origCallback(resp, err);
+    };
+
+    if (provider === 'ollama') {
+      callOllamaForController(promptText, callback);
+      return;
+    }
+
     var key = cfg.geminiApiKey;
     if (!key) { callback(null, 'No API key'); return; }
 
-    // Build message array for Gemini
-    var systemMsg = buildSystemPrompt();
-    var messages = [{ parts: [{ text: systemMsg + '\n\n' + promptText }] }];
+    var combinedPrompt = buildCombinedPrompt(promptText);
 
-    // Add conversation history
-    if (ivConversationHistory.length > 0) {
-      messages = [];
-      // Interleave: system + history + current
-      var combined = systemMsg + '\n\n--- CONVERSATION SO FAR ---\n';
-      ivConversationHistory.forEach(function (m) {
-        combined += (m.role === 'ai' ? 'Karia: ' : 'Candidate: ') + m.content + '\n';
-      });
-      combined += '\n--- CURRENT TASK ---\n' + promptText;
-      messages = [{ parts: [{ text: combined }] }];
-    }
-
-    geminiCallWithFallback(key, messages[0].parts[0].text, function (text, err) {
+    geminiCallWithFallback(key, combinedPrompt, function (text, err) {
       if (err || !text) { callback(null, err || 'Empty response'); return; }
-      // Strip markdown fences if present
-      var clean = text.replace(/```json\s*/gi,'').replace(/```\s*/g,'').trim();
-      // Find JSON object
-      var match = clean.match(/\{[\s\S]*\}/);
-      if (!match) { callback({ message: text, action: 'nextQuestion' }, null); return; }
-      try {
-        var parsed = JSON.parse(match[0]);
-        callback(parsed, null);
-      } catch(e) {
-        // The model occasionally emits near-valid JSON (unquoted or
-        // dash-prefixed keys, trailing commas). Try to repair it before
-        // giving up, so a raw JSON blob never gets shown to the user.
-        try {
-          var repaired = sanitizeJsonLike(match[0]);
-          var parsedRepaired = JSON.parse(repaired);
-          callback(parsedRepaired, null);
-        } catch (e2) {
-          // Still broken — pull out just the fields we need via regex
-          // rather than dumping the whole (invalid) JSON as chat text.
-          var msg = extractJsonStringField(match[0], 'message')
-                 || extractJsonStringField(match[0], 'question')
-                 || 'Thanks for sharing that — let\'s continue.';
-          var action = extractJsonStringField(match[0], 'action') || 'nextQuestion';
-          var question = extractJsonStringField(match[0], 'question');
-          var fallback = { message: msg, action: action };
-          if (question) fallback.question = question;
-          callback(fallback, null);
-        }
-      }
+      parseModelJsonResponse(text, callback);
     });
   }
 
@@ -5082,10 +5293,17 @@ description
     showTypingBubble();
     callGeminiForController(buildEvalPrompt(answer, questionNum), function (resp) {
       if (!resp) {
-        // Fallback: just go to next question
+        // Record that this answer couldn't be evaluated, rather than
+        // silently dropping it. The report layer uses `failed: true` to
+        // show "not scored" instead of pretending the question never
+        // happened, and to exclude it from the averaged score.
+        ivEvaluations.push({ questionNum: questionNum, answer: answer, evaluation: null, failed: true });
+
+        // Fallback: just go to next question. Honest, neutral copy —
+        // we don't actually know the answer was good, so we don't claim it was.
         var nextNum = questionNum + 1;
         if (nextNum <= ivTotalQuestions) {
-          var fb = 'Good answer! Let me ask you the next question.';
+          var fb = 'Thanks for sharing that — let\'s continue. That response won\'t affect your scoring due to a temporary connection issue.';
           speak(fb, function () { hideTypingBubble(); addAiMessage(fb); }, function () {
             ivCurrentQuestion = nextNum;
             ivQCurrent.textContent = nextNum;
@@ -5392,10 +5610,17 @@ description
     var dimTotals = {};
     var dimCounts = {};
     currentDims.forEach(function (d) { dimTotals[d] = 0; dimCounts[d] = 0; });
-    var evalCount = ivEvaluations.length;
+
+    // Evaluations that failed (Gemini unreachable for that turn) carry no
+    // dimension data and must never be counted in the score — only in a
+    // separate "not scored" note so the candidate/recruiter knows why.
+    var scoredEvaluations = ivEvaluations.filter(function (ev) { return !ev.failed; });
+    var failedEvaluations = ivEvaluations.filter(function (ev) { return ev.failed; });
+    var evalCount = scoredEvaluations.length;
+    var failedCount = failedEvaluations.length;
 
     if (evalCount > 0) {
-      ivEvaluations.forEach(function (ev) {
+      scoredEvaluations.forEach(function (ev) {
         var eval_ = ev.evaluation || {};
         // Support both the new { dimensions: {...} } shape and, for
         // backwards compatibility, dimension keys placed directly on eval_.
@@ -5440,7 +5665,7 @@ description
         else if (overallAvg >= 7) scoreLabelText = 'Strong Performance';
         else if (overallAvg >= 5) scoreLabelText = 'Satisfactory Performance';
         else scoreLabelText = 'Needs Improvement';
-        scoreLabel.textContent = earlyEnd ? scoreLabelText + ' (Partial)' : scoreLabelText;
+        scoreLabel.textContent = (earlyEnd || failedCount > 0) ? scoreLabelText + ' (Partial)' : scoreLabelText;
         scoreLabel.style.color = getScoreColor(overallAvg);
       }
 
@@ -5491,6 +5716,9 @@ description
       // (average of that question's dimension scores) rated 1-10 for how
       // well the answer matched the question that was asked.
       var summaries = ivEvaluations.map(function (ev, i) {
+        if (ev.failed) {
+          return { num: i + 1, score: null, text: 'Not scored — a temporary connection issue prevented this response from being evaluated. It was excluded from your overall score.' };
+        }
         var eval_ = ev.evaluation || {};
         var text = eval_.summary || '';
         // Support both the new { dimensions: {...} } shape and legacy flat keys.
@@ -5533,7 +5761,10 @@ description
       if (summaryEl) {
         var scoreWord = overallAvg >= 9 ? 'outstanding' : overallAvg >= 7 ? 'strong' : overallAvg >= 5 ? 'satisfactory' : 'developing';
         var earlyPrefix = earlyEnd ? 'Since the session ended early, this summary is based on the ' + evalCount + ' question' + (evalCount !== 1 ? 's' : '') + ' you completed. ' : '';
-        summaryEl.textContent = earlyPrefix + config.candidateName + ' demonstrated a ' + scoreWord + ' overall performance with an average score of ' + overallAvg + '/10 across ' + evalCount + ' evaluated response' + (evalCount !== 1 ? 's' : '') + '. ' + (strengths.length ? 'Notable strengths were evident in ' + strengths.slice(0,2).join(' and ') + '.' : '') + (improvements.length ? ' Priority focus areas include ' + improvements.slice(0,2).join(' and ') + '.' : '');
+        var failedSuffix = failedCount > 0
+          ? ' ' + failedCount + ' response' + (failedCount !== 1 ? 's' : '') + ' could not be evaluated due to a temporary connection issue and ' + (failedCount !== 1 ? 'were' : 'was') + ' excluded from this score.'
+          : '';
+        summaryEl.textContent = earlyPrefix + config.candidateName + ' demonstrated a ' + scoreWord + ' overall performance with an average score of ' + overallAvg + '/10 across ' + evalCount + ' evaluated response' + (evalCount !== 1 ? 's' : '') + '. ' + (strengths.length ? 'Notable strengths were evident in ' + strengths.slice(0,2).join(' and ') + '.' : '') + (improvements.length ? ' Priority focus areas include ' + improvements.slice(0,2).join(' and ') + '.' : '') + failedSuffix;
       }
 
       // Dynamic practice list based on low-scoring dimensions
